@@ -1,4 +1,4 @@
-// bot-mexc-pump-alert.js
+// bot-mexc-pump-alert.js (v2 - có điểm an toàn)
 import dotenv from 'dotenv';
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
@@ -9,13 +9,13 @@ dotenv.config();
 // === CẤU HÌNH ===
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const chatId = process.env.TELEGRAM_CHAT_ID;
-const pollInterval = parseInt(process.env.POLL_INTERVAL) || 8000; // 30s
-const alertCooldown = 6000; // 6s per symbol
+const pollInterval = parseInt(process.env.POLL_INTERVAL) || 8000;
+const alertCooldown = 6000;
 const axiosTimeout = 10000;
 const klineLimit = 10;
 const maxConcurrentRequests = 6;
 const maxRequestsPerSecond = 5;
-const messageLifetime = 2 * 60 * 60 * 1000; // 2 tiếng
+const messageLifetime = 2 * 60 * 60 * 1000;
 const MIN_VOLUME_USDT = parseFloat(process.env.MIN_VOLUME_USDT) || 50000;
 const PUMP_THRESHOLD_PCT = parseFloat(process.env.PUMP_THRESHOLD_PCT) || 5;
 
@@ -25,7 +25,6 @@ if (!token || !chatId) {
 }
 
 const bot = new TelegramBot(token, { polling: false });
-
 const lastAlertTimes = new Map();
 const sentMessages = [];
 let binanceSymbols = new Set();
@@ -35,13 +34,11 @@ const axiosInstance = axios.create({
   httpsAgent: new https.Agent({ keepAlive: true }),
 });
 
-// === HÀM HỖ TRỢ ===
 function avgVolume(klines) {
   if (klines.length === 0) return 0;
   return klines.reduce((sum, k) => sum + k.volume, 0) / klines.length;
 }
 
-// === FETCH BINANCE SYMBOLS ===
 async function fetchBinanceSymbols() {
   try {
     const resp = await axiosInstance.get('https://api.binance.com/api/v3/exchangeInfo');
@@ -57,7 +54,6 @@ async function fetchBinanceSymbols() {
   }
 }
 
-// === FETCH MEXC FUTURES TICKERS ===
 async function fetchAllTickers() {
   try {
     const response = await axiosInstance.get('https://contract.mexc.com/api/v1/contract/ticker');
@@ -72,17 +68,14 @@ async function fetchAllTickers() {
   return [];
 }
 
-// === FETCH KLINE (1 phút) ===
 async function fetchKlinesWithRetry(symbol, retries = 3) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - klineLimit * 60;
-
   for (let i = 0; i < retries; i++) {
     try {
       const res = await axiosInstance.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}`, {
         params: { interval: 'Min1', start, end: now },
       });
-
       if (res.data?.success && res.data.data) {
         const { time, open, high, low, close, vol } = res.data.data;
         const klines = time.map((t, i) => {
@@ -111,38 +104,27 @@ async function fetchKlinesWithRetry(symbol, retries = 3) {
   return [];
 }
 
-// === RATE LIMIT ===
 async function mapWithRateLimit(items, fn, concurrency = 8, rps = 6) {
   const results = [];
-  let active = 0;
   let queue = 0;
   let lastTime = 0;
   const interval = 1000 / rps;
-
   async function runNext() {
     if (queue >= items.length) return;
     const i = queue++;
-    active++;
-
     const now = Date.now();
     const diff = now - lastTime;
     if (diff < interval) await new Promise(r => setTimeout(r, interval - diff));
     lastTime = Date.now();
-
-    const result = await fn(items[i]);
-    results[i] = result;
-
-    active--;
+    results[i] = await fn(items[i]);
     if (queue < items.length) await runNext();
   }
-
   const initial = Math.min(concurrency, items.length);
   const runners = Array.from({ length: initial }, runNext);
   await Promise.all(runners);
   return results;
 }
 
-// === GỬI TIN NHẮN TELEGRAM ===
 async function sendMessageWithAutoDelete(message, options) {
   try {
     const sent = await bot.sendMessage(chatId, message, options);
@@ -152,92 +134,79 @@ async function sendMessageWithAutoDelete(message, options) {
   }
 }
 
-// === XÓA TIN NHẮN CŨ ===
 async function cleanupOldMessages() {
   const now = Date.now();
   const toDelete = sentMessages.filter(m => now - m.time > messageLifetime);
-  if (!toDelete.length) return;
-
   for (const msg of toDelete) {
-    try {
-      await bot.deleteMessage(chatId, msg.id);
-    } catch (err) {
-      // ignore
-    }
+    try { await bot.deleteMessage(chatId, msg.id); } catch {}
   }
   sentMessages.splice(0, sentMessages.length, ...sentMessages.filter(m => now - m.time <= messageLifetime));
 }
 
-// === PHÁT HIỆN PUMP + FALSE BREAKOUT → SHORT ALERT ===
 async function detectPumpAndShort(symbol, klines) {
   if (!klines || klines.length < 5) return;
-
   const recent = klines.slice(-10);
   const firstPrice = recent[0].open;
   const lastPrice = recent[recent.length - 1].close;
   const totalChange = ((lastPrice - firstPrice) / firstPrice) * 100;
-
-  // Chỉ cảnh báo nếu tăng mạnh
   if (totalChange < PUMP_THRESHOLD_PCT) return;
-
-  // Chỉ quan tâm coin KHÔNG có trên Binance
   const binanceSymbol = symbol.replace('_USDT', 'USDT');
   const isMexcExclusive = !binanceSymbols.has(binanceSymbol);
   if (!isMexcExclusive) return;
 
-  // Phát hiện false breakout !!!
   const prevHigh = Math.max(...recent.slice(0, -1).map(k => k.high));
   const current = recent[recent.length - 1];
-  const isFalseBreakout =
-    current.high > prevHigh &&
-    current.close < current.open &&
-    current.close < prevHigh &&
-    current.volume > 2 * avgVolume(recent.slice(0, -1));
+  const avgVol = avgVolume(recent.slice(0, -1));
+  const volRatio = current.volume / avgVol;
+  const isFalseBreakout = current.high > prevHigh && current.close < current.open && current.close < prevHigh && volRatio > 2;
 
-  if (isFalseBreakout) {
-    const lastAlert = lastAlertTimes.get(symbol);
-    if (lastAlert && Date.now() - lastAlert < alertCooldown) return;
+  const aggressiveSignal = totalChange > 8 && volRatio > 4 && current.close < current.open && current.high > prevHigh * 0.98;
+  const safeSignal = isFalseBreakout;
 
-    const link = `https://mexc.com/futures/${symbol}?type=swap`;
-    const message =
-      `🚨 [${symbol}](${link})\n` +
-      `📈 Pumped ${totalChange.toFixed(2)}% in 10 phút\n` +
-      `📉 False breakout: đỉnh ${prevHigh.toFixed(8)} bị phá rồi rơi về ${current.close.toFixed(8)}\n` +
-      `🧱 Volume: ${current.volume.toLocaleString()} (x2 trung bình)\n` +
-      `👉 Ưu tiên SHORT (coin chỉ có trên MEXC)`;
+  let safetyLabel = 'Không xác định';
+  let safetyScore = 0;
 
-    await sendMessageWithAutoDelete(message, {
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true,
-    });
-
-    lastAlertTimes.set(symbol, Date.now());
-    console.log(`🔔 SHORT alert: ${symbol} (${totalChange.toFixed(2)}% pump)`);
+  if (safeSignal) {
+    safetyLabel = 'Cao (Safe logic)';
+    safetyScore = 90;
+  } else if (aggressiveSignal) {
+    safetyLabel = 'Thấp (Aggressive logic)';
+    safetyScore = 45;
   }
+
+  if (!(safeSignal || aggressiveSignal)) return;
+
+  const lastAlert = lastAlertTimes.get(symbol);
+  if (lastAlert && Date.now() - lastAlert < alertCooldown) return;
+
+  const link = `https://mexc.com/futures/${symbol}?type=swap`;
+  const message =
+    `🚨 [${symbol}](${link})\n` +
+    `📈 Pumped ${totalChange.toFixed(2)}% trong 10 phút\n` +
+    `📉 False breakout: đỉnh ${prevHigh.toFixed(8)} bị phá rồi rơi về ${current.close.toFixed(8)}\n` +
+    `🧱 Volume: ${current.volume.toLocaleString()} (x${volRatio.toFixed(1)} trung bình)\n` +
+    `💡 Độ an toàn: ${safetyLabel} (${safetyScore}/100)`;
+
+  await sendMessageWithAutoDelete(message, { parse_mode: 'Markdown', disable_web_page_preview: true });
+  lastAlertTimes.set(symbol, Date.now());
+  console.log(`🔔 SHORT alert: ${symbol} (${totalChange.toFixed(2)}% pump, ${safetyLabel})`);
 }
 
-// === MAIN LOOP ===
 async function checkAndAlert() {
   const tickers = await fetchAllTickers();
   if (!tickers?.length) {
     console.log('⚠️ Không có tickers.');
     return;
   }
-
   console.log(`🔍 Quét ${tickers.length} coin futures trên MEXC...`);
-
   const symbols = tickers.map(t => t.symbol);
   await mapWithRateLimit(symbols, async (symbol) => {
     const klines = await fetchKlinesWithRetry(symbol);
-    if (klines?.length >= 5) {
-      await detectPumpAndShort(symbol, klines);
-    }
+    if (klines?.length >= 5) await detectPumpAndShort(symbol, klines);
   }, maxConcurrentRequests, maxRequestsPerSecond);
-
   await cleanupOldMessages();
 }
 
-// === KHỞI ĐỘNG ===
 (async () => {
   console.log('🚀 Khởi động bot cảnh báo pump & short (MEXC-only)...');
   await fetchBinanceSymbols();
