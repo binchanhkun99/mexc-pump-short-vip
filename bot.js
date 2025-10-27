@@ -185,6 +185,7 @@ async function detectPumpAndShort(symbol, klines) {
     `📈 Pumped ${totalChange.toFixed(2)}% trong 10 phút\n` +
     `📉 False breakout: đỉnh ${prevHigh.toFixed(8)} bị phá rồi rơi về ${current.close.toFixed(8)}\n` +
     `🧱 Volume: ${current.volume.toLocaleString()} (x${volRatio.toFixed(1)} trung bình)\n` +
+    `👉 Ưu tiên SHORT (coin chỉ có trên MEXC)\n` +
     `💡 Độ an toàn: ${safetyLabel} (${safetyScore}/100)`;
 
   await sendMessageWithAutoDelete(message, { parse_mode: 'Markdown', disable_web_page_preview: true });
