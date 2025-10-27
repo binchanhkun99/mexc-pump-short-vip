@@ -185,7 +185,7 @@ async function detectPumpAndShort(symbol, klines) {
   const isMexcExclusive = !binanceSymbols.has(binanceSymbol);
   if (!isMexcExclusive) return;
 
-  // Phát hiện false breakout
+  // Phát hiện false breakout !!!
   const prevHigh = Math.max(...recent.slice(0, -1).map(k => k.high));
   const current = recent[recent.length - 1];
   const isFalseBreakout =
