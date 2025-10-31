@@ -325,7 +325,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
         `• Target 1: -${(dropFromPeak * 1.3).toFixed(2)}% ($${(currentPrice * (1 - dropFromPeak * 1.3 / 100)).toFixed(6)})\n` +
         `• Target 2: -${(dropFromPeak * 1.8).toFixed(2)}% ($${(currentPrice * (1 - dropFromPeak * 1.8 / 100)).toFixed(6)})\n` +
         `• Stop Loss: $${trackData.peakPrice.toFixed(6)} (+${((trackData.peakPrice - currentPrice) / currentPrice * 100).toFixed(2)}%)\n` +
-        `\n⚡ **Risk Level: ${riskLevel}**` +
+        `\n⚡ **Risk Level: ${riskLevel}**\n` +
         `🏪 ${isMexcExclusive ? 'KHÔNG CÓ TRÊN BINANCE 🟢' : 'CÓ BINANCE 🟡'}`;
       
       await sendMessageWithAutoDelete(alertMessage, { 
