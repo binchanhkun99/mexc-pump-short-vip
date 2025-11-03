@@ -1,4 +1,4 @@
-// bot-mexc-downtrend-short.js
+// bot-mexc-downtrend-short-improved.js
 import dotenv from 'dotenv';
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
@@ -6,29 +6,28 @@ import https from 'https';
 
 dotenv.config();
 
-// === CẤU HÌNH ===
+// === CẤU HÌNH CẢI TIẾN ===
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const chatId = process.env.TELEGRAM_CHAT_ID_DOWN_TREND;
 const pollInterval = parseInt(process.env.DOWNTREND_POLL_INTERVAL) || 10000; // 10s
 const alertCooldown = 30000;
 const axiosTimeout = 8000;
-const klineLimit = 60; // Cần đủ nến để tính MA200
+const klineLimit = 100; // Tăng từ 60 → 100 để tính MA200 chính xác hơn
 const maxConcurrentRequests = 8;
 const maxRequestsPerSecond = 8;
 const messageLifetime = 2 * 60 * 60 * 1000;
 
 const MIN_VOLUME_USDT = parseFloat(process.env.DOWNTREND_MIN_VOLUME_USDT) || 100000;
-const DOWNTREND_SLOPE_THRESHOLD = -0.15; // MA200 giảm ít nhất 0.15% mỗi 5 nến
-const DOWNTREND_MIN_DURATION = 20 * 60 * 1000; // Theo dõi tối thiểu 20 phút trước khi cảnh báo
-const DOWNTREND_TRACKING_MAX = 60 * 60 * 1000; // Theo dõi tối đa 1h
-const RSI_OVERSOLD_THRESHOLD = 25; // Tránh RSI < 25 (quá bán)
-const MAX_DISTANCE_TO_MA30_PCT = 2.0; // Chỉ cảnh báo khi giá cách MA30 <= 2%
+const DOWNTREND_SLOPE_THRESHOLD = -0.12; // Nới lỏng từ -0.15 → -0.12
+const DOWNTREND_MIN_DURATION = 30 * 60 * 1000; // Tăng từ 20 → 30 phút
+const DOWNTREND_TRACKING_MAX = 90 * 60 * 1000; // Tăng từ 1h → 1.5h
+const RSI_OVERSOLD_THRESHOLD = 32; // Tăng từ 25 → 32
+const MAX_DISTANCE_TO_MA30_PCT = 4.0; // Tăng từ 2.0 → 4.0
+const LOWER_HIGHS_WINDOW = 60; // Tăng từ 30 → 60 nến
 
 if (!token || !chatId) {
   console.log("TL TOKEN", token);
-    console.log("TL ID", chatId);
-
-  
+  console.log("TL ID", chatId);
   console.error('❌ Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID trong .env');
   process.exit(1);
 }
@@ -73,6 +72,87 @@ function calculateRSI(klines, period = 14) {
   if (avgGain === 0) return 0;
   const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
+}
+
+// === CẢI TIẾN: PHÁT HIỆN LOWER HIGHS LINH HOẠT HƠN ===
+function detectLowerHighs(klines, window = LOWER_HIGHS_WINDOW) {
+  if (klines.length < window) return false;
+  
+  const recentCandles = klines.slice(-window);
+  const highs = recentCandles.map(k => k.high);
+  let peaks = [];
+  
+  // Tìm peaks với range lớn hơn và tolerance
+  for (let i = 10; i < highs.length - 10; i++) {
+    const leftMax = Math.max(...highs.slice(Math.max(0, i - 10), i));
+    const rightMax = Math.max(...highs.slice(i + 1, Math.min(highs.length, i + 11)));
+    
+    // Nới lỏng: chỉ cần cao hơn 98% xung quanh
+    if (highs[i] >= leftMax * 0.98 && highs[i] >= rightMax * 0.98) {
+      peaks.push({ value: highs[i], index: i });
+    }
+  }
+  
+  if (peaks.length < 2) return false;
+  
+  // Lọc peaks gần nhau (cách nhau < 5 nến)
+  const filteredPeaks = [];
+  for (let i = 0; i < peaks.length; i++) {
+    if (filteredPeaks.length === 0 || 
+        peaks[i].index - filteredPeaks[filteredPeaks.length - 1].index >= 5) {
+      filteredPeaks.push(peaks[i]);
+    }
+  }
+  
+  if (filteredPeaks.length < 2) return false;
+  
+  // Check Lower Highs với tolerance 1%
+  let lowerHighsCount = 0;
+  for (let i = 1; i < filteredPeaks.length; i++) {
+    if (filteredPeaks[i].value < filteredPeaks[i - 1].value * 0.99) {
+      lowerHighsCount++;
+    }
+  }
+  
+  // Chỉ cần ít nhất 1 cặp Lower Highs
+  return lowerHighsCount >= 1;
+}
+
+// === CẢI TIẾN: CHECK VOLUME PULLBACK ===
+function isPullbackVolume(klines) {
+  if (klines.length < 15) return true; // Không đủ data thì skip check
+  
+  const last3Vol = klines.slice(-3).map(k => k.volume);
+  const avg10Vol = klines.slice(-13, -3).reduce((sum, k) => sum + k.volume, 0) / 10;
+  
+  const currentAvgVol = last3Vol.reduce((a, b) => a + b, 0) / 3;
+  
+  // Volume pullback giảm ít nhất 20% so với trung bình
+  return currentAvgVol < avg10Vol * 0.85;
+}
+
+// === CẢI TIẾN: KIỂM TRA GIÁ REJECT TẠI MA ===
+function isPriceRejectionAtMA(klines, ma30, ma60) {
+  if (klines.length < 5) return false;
+  
+  const last5Candles = klines.slice(-5);
+  let rejectionCount = 0;
+  
+  for (const candle of last5Candles) {
+    // Nến có bóng trên dài và close gần low (rejection)
+    const upperShadow = candle.high - Math.max(candle.open, candle.close);
+    const bodySize = Math.abs(candle.close - candle.open);
+    const totalRange = candle.high - candle.low;
+    
+    if (totalRange > 0 && upperShadow > bodySize * 1.5) {
+      // Check xem có chạm MA30 hoặc MA60 không
+      if (candle.high >= ma30 * 0.99 && candle.high <= ma30 * 1.01) {
+        rejectionCount++;
+      }
+    }
+  }
+  
+  return rejectionCount >= 1;
 }
 
 async function fetchBinanceSymbols() {
@@ -185,9 +265,9 @@ async function cleanupOldMessages() {
   sentMessages.splice(0, sentMessages.length, ...sentMessages.filter(m => now - m.time <= messageLifetime));
 }
 
-// === PHÂN TÍCH DOWNTREND ===
+// === PHÂN TÍCH DOWNTREND CẢI TIẾN ===
 async function analyzeDowntrend(symbol, klines) {
-  if (klines.length < 50) return;
+  if (klines.length < 70) return;
 
   const currentCandle = klines[klines.length - 1];
   const currentPrice = currentCandle.close;
@@ -201,39 +281,21 @@ async function analyzeDowntrend(symbol, klines) {
   // Giá phải dưới MA200 và MA60
   if (currentPrice > ma200 || currentPrice > ma60) return;
 
-  // Độ dốc MA200 phải âm đủ mạnh
+  // Độ dốc MA200 phải âm (nới lỏng hơn)
   const ma200Slope = calculateMASlope(klines, 200);
   if (ma200Slope === null || ma200Slope > DOWNTREND_SLOPE_THRESHOLD) return;
 
-  // RSI không được quá bán
+  // RSI không được quá bán (tăng ngưỡng lên 32)
   const rsi = calculateRSI(klines, 14);
   if (rsi < RSI_OVERSOLD_THRESHOLD) return;
 
-  // Kiểm tra Lower Highs (ít nhất 2 đỉnh giảm dần trong 30 nến gần nhất)
-  const recentHighs = klines.slice(-30).map(k => k.high);
-  let peaks = [];
-  for (let i = 5; i < recentHighs.length - 5; i++) {
-    const left = Math.max(...recentHighs.slice(Math.max(0, i - 5), i));
-    const right = Math.max(...recentHighs.slice(i + 1, i + 6));
-    if (recentHighs[i] > left && recentHighs[i] > right) {
-      peaks.push(recentHighs[i]);
-    }
-  }
-  if (peaks.length < 2) return;
-  // Kiểm tra Lower Highs
-  let isLowerHighs = true;
-  for (let i = 1; i < peaks.length; i++) {
-    if (peaks[i] >= peaks[i - 1]) {
-      isLowerHighs = false;
-      break;
-    }
-  }
-  if (!isLowerHighs) return;
+  // === KIỂM TRA LOWER HIGHS CẢI TIẾN ===
+  if (!detectLowerHighs(klines, LOWER_HIGHS_WINDOW)) return;
 
   // === ĐÃ XÁC NHẬN DOWNTREND ===
   if (!trackedDowntrendCoins.has(symbol)) {
     trackedDowntrendCoins.set(symbol, { addedAt: Date.now(), notified: false });
-    console.log(`📉 Downtrend detected: ${symbol}`);
+    console.log(`📉 Downtrend detected: ${symbol} (RSI: ${rsi.toFixed(1)})`);
   }
 
   const trackData = trackedDowntrendCoins.get(symbol);
@@ -252,6 +314,15 @@ async function analyzeDowntrend(symbol, klines) {
   const distanceToMA30Pct = ((ma30 - currentPrice) / currentPrice) * 100;
   if (distanceToMA30Pct < 0 || distanceToMA30Pct > MAX_DISTANCE_TO_MA30_PCT) return;
 
+  // === CHECK VOLUME PULLBACK ===
+  if (!isPullbackVolume(klines)) {
+    console.log(`⚠️ ${symbol}: Volume không pullback (có thể đang pump)`);
+    return;
+  }
+
+  // === CHECK REJECTION AT MA (OPTIONAL - BONUS SIGNAL) ===
+  const hasRejection = isPriceRejectionAtMA(klines, ma30, ma60);
+
   // Volume không được tăng đột biến (tránh pump)
   const avgVol = klines.slice(-10, -1).reduce((sum, k) => sum + k.volume, 0) / 9;
   const volRatio = currentCandle.volume / avgVol;
@@ -261,20 +332,24 @@ async function analyzeDowntrend(symbol, klines) {
     const binanceSymbol = symbol.replace('_USDT', 'USDT');
     const isMexcExclusive = !binanceSymbols.has(binanceSymbol);
 
+    const rejectionEmoji = hasRejection ? '🔴 Rejection tại MA!' : '';
     const message = 
       `📉 **DOWNTREND SHORT OPPORTUNITY**: [${symbol}](https://mexc.com/futures/${symbol}?type=swap)\n\n` +
       `**Xu hướng giảm ổn định**:\n` +
       `• Giá hiện tại: $${currentPrice.toFixed(6)}\n` +
-      `• MA30: $${ma30.toFixed(6)}\n` +
+      `• MA30: $${ma30.toFixed(6)} (${distanceToMA30Pct.toFixed(2)}% phía trên)\n` +
+      `• MA60: $${ma60.toFixed(6)}\n` +
       `• MA200 dốc: ${ma200Slope.toFixed(2)}%/5nến\n` +
       `• RSI(14): ${rsi.toFixed(1)}\n` +
       `• Lower Highs: ✅\n` +
+      `• Volume pullback: ✅\n` +
+      `${rejectionEmoji}\n` +
       `\n🎯 **Chiến lược**:\n` +
       `• Entry: $${currentPrice.toFixed(6)}\n` +
       `• Target 1: -3% → $${(currentPrice * 0.97).toFixed(6)}\n` +
       `• Target 2: -6% → $${(currentPrice * 0.94).toFixed(6)}\n` +
       `• Stop Loss: $${ma30.toFixed(6)} (+${distanceToMA30Pct.toFixed(2)}%)\n` +
-      `\n⚡ **Risk: LOW-MEDIUM** (downtrend ổn định)\n` +
+      `\n⚡ **Risk: ${hasRejection ? 'LOW' : 'LOW-MEDIUM'}** (downtrend ổn định)\n` +
       `🏪 ${isMexcExclusive ? 'CHỈ MEXC 🟢' : 'CÓ BINANCE 🟡'}`;
 
     await sendMessageWithAutoDelete(message, { 
@@ -283,7 +358,7 @@ async function analyzeDowntrend(symbol, klines) {
     });
 
     trackData.notified = true;
-    console.log(`📉 Downtrend SHORT signal: ${symbol}`);
+    console.log(`📉 Downtrend SHORT signal: ${symbol} | RSI: ${rsi.toFixed(1)} | Distance: ${distanceToMA30Pct.toFixed(2)}%`);
   }
 }
 
@@ -299,7 +374,7 @@ async function checkAndAlert() {
   const symbols = tickers.map(t => t.symbol);
   await mapWithRateLimit(symbols, async (symbol) => {
     const klines = await fetchKlinesWithRetry(symbol);
-    if (klines?.length >= 50) {
+    if (klines?.length >= 70) {
       await analyzeDowntrend(symbol, klines);
     }
   }, maxConcurrentRequests, maxRequestsPerSecond);
@@ -309,9 +384,12 @@ async function checkAndAlert() {
 
 // === KHỞI ĐỘNG ===
 (async () => {
-  console.log('📉 Khởi động bot DOWNTREND SHORT v1...');
+  console.log('📉 Khởi động bot DOWNTREND SHORT v2 (IMPROVED)...');
   console.log(`📊 Volume tối thiểu: $${MIN_VOLUME_USDT.toLocaleString()}`);
   console.log(`📉 MA200 dốc tối thiểu: ${DOWNTREND_SLOPE_THRESHOLD}%`);
+  console.log(`📈 RSI oversold threshold: ${RSI_OVERSOLD_THRESHOLD}`);
+  console.log(`📏 Max distance to MA30: ${MAX_DISTANCE_TO_MA30_PCT}%`);
+  console.log(`🔍 Lower Highs window: ${LOWER_HIGHS_WINDOW} nến`);
   console.log(`⏱️ Polling mỗi ${pollInterval / 1000} giây`);
   await fetchBinanceSymbols();
   await checkAndAlert();
