@@ -25,7 +25,7 @@ if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
 const POLL_MS = parseInt(process.env.POLL_MS || '5000', 10);
 const LOOKBACK_MIN = parseInt(process.env.LOOKBACK_MIN || '600', 10);
 
-const FAKE_START_BALANCE = parseFloat(process.env.FAKE_START_BALANCE || '100');
+const FAKE_START_BALANCE = parseFloat(process.env.FAKE_START_BALANCE || '107.50');
 const RISK_PER_TRADE = parseFloat(process.env.RISK_PER_TRADE || '0.03');
 const MIN_STAKE = parseFloat(process.env.MIN_STAKE || '5');
 const MAX_TRADES_PER_DAY = parseInt(process.env.MAX_TRADES_PER_DAY || '100', 10);
@@ -454,7 +454,7 @@ async function mainLoop() {
 (async () => {
   await tgSend(
     `🚀 <b>MEXC Prediction GPT Bot</b> 24/7 khởi động\n` +
-    `Vốn giả: <b>$${balance.toFixed(2)}</b> | Symbols: ${SYMBOLS.join(', ')}\n` +
+    `Số dư: <b>$${balance.toFixed(2)}</b> | Symbols: ${SYMBOLS.join(', ')}\n` +
     `TF: ${ACTIVE_TFS.join(', ')} | Payout: ${Object.entries(PAYOUT).map(([k,v])=>`${escapeHtml(k)}:${Math.round(v*100)}%`).join(' ')}\n` +
     `Giới hạn: <b>${MAX_TRADES_PER_DAY}</b> lệnh/ngày | Min stake: <b>$${MIN_STAKE.toFixed(2)}</b> | Rủi ro: <b>${Math.round(RISK_PER_TRADE*100)}%</b>\n` +
     `Múi giờ: Asia/Bangkok (UTC+7)`
