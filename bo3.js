@@ -8,7 +8,8 @@ import axios from 'axios';
 import https from 'https';
 import TelegramBot from 'node-telegram-bot-api';
 
-dotenv.config();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 /* ============== CẤU HÌNH ============== */
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN_BO || '';
