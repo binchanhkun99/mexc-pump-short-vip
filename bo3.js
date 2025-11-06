@@ -8,6 +8,7 @@ import axios from 'axios';
 import https from 'https';
 import TelegramBot from 'node-telegram-bot-api';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
