@@ -7,6 +7,8 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import https from 'https';
 import TelegramBot from 'node-telegram-bot-api';
+import path from 'path';
+
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
