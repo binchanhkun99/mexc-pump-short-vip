@@ -56,7 +56,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       });
 
       const alertMessage =
-        `🎯 *TRACKING PUMP*: [${symbol}](https://mexc.com/futures/${symbol}?type=swap)\n` +
+        `🎯 *TRACKING PUMP*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
         `📈 Pump: +${pumpPct.toFixed(2)}% trong 10 phút\n` +
         `💰 Đỉnh tạm thời: $${formatUsd(highestPrice)}\n` +
         `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 (dễ bị pump & dump)' : 'CÓ BINANCE 🟡'}\n` +
@@ -174,7 +174,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     if (hasDoubleTop) patternsText.push('Double Top');
 
     const msg =
-      `🔻 *TÍN HIỆU SHORT ${signalStrength}*: [${symbol}](https://mexc.com/futures/${symbol}?type=swap)\n\n` +
+      `🔻 *TÍN HIỆU SHORT ${signalStrength}*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n\n` +
       `**Phân tích:**\n` +
       `• Pump gốc: +${trackData.initialPumpPct.toFixed(2)}%\n` +
       `• Giảm từ đỉnh: ${dropFromPeak.toFixed(2)}% (Đỉnh: $${formatUsd(trackData.peakPrice)})\n` +
