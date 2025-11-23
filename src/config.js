@@ -28,12 +28,12 @@ export const CONFIG = {
   ACCOUNT_BALANCE_START: 150,
   ACCOUNT_BASE_CAPITAL: 250,             // Dùng để tính ngưỡng 25%
 
-  DCA_PLAN: [
-    { roiTrigger: -100, addPercent: 0.005 }, // -100% ROI => +0.5% tài khoản
-    { roiTrigger: -200, addPercent: 0.01 },  // -200% => +1%
-    { roiTrigger: -300, addPercent: 0.01 },  // Mỗi bậc -100% tiếp theo +1%
-    { roiTrigger: -400, addPercent: 0.01 },
-    { roiTrigger: -500, addPercent: 0.01 },
+DCA_PLAN: [
+    { roiTrigger: -100, addPercent: 0.005 }, // 1×
+    { roiTrigger: -200, addPercent: 0.01  }, // 2×
+    { roiTrigger: -400, addPercent: 0.02  }, // 4×
+    { roiTrigger: -800, addPercent: 0.04  }, // 8×
+    { roiTrigger: -1600, addPercent: 0.08 }, // 16×
   ],
 
   MAX_LOSS_RATIO_FOR_HODL: 0.6,          // Lệnh âm >= 60% balance => dừng DCA, gồng lỗ

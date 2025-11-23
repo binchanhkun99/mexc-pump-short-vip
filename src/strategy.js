@@ -185,7 +185,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       `• MA: ${priceUnderMA ? 'Giá đã chui xuống MA5/10 ✅' : 'Chưa gãy MA'}\n` +
       `• Momentum: ${consecutiveBearish ? '3 nến đỏ liên tiếp ✅' : 'Hỗn hợp'}\n` +
       (patternsText.length ? `• Pattern: ${patternsText.join(', ')} ✅\n` : '') +
-      `\n🎯 *Kịch bản tham khảo:* (dành cho tay trade tay)\n` +
+      `\n🎯 *Kịch bản tham khảo:*\n` +
       `• Entry tham chiếu: $${formatUsd(currentPrice)}\n` +
       `• Target 1: -${target1Pct.toFixed(2)}% ($${formatUsd(target1Price)})\n` +
       `• Target 2: -${target2Pct.toFixed(2)}% ($${formatUsd(target2Price)})\n` +
@@ -194,8 +194,6 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       )} (+${(((trackData.peakPrice - currentPrice) / currentPrice) * 100).toFixed(2)}%)\n` +
       `\n⚡ *Risk Level*: ${riskLevel}\n` +
       `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 (ưu tiên bào mạnh)' : 'CÓ BINANCE 🟡'}\n` +
-      `\n🤖 Bot đang mô phỏng lệnh SHORT với account ảo, DCA & quản lý vốn theo chiến lược bạn yêu cầu.`;
-
     await sendMessageWithAutoDelete(msg, {
       parse_mode: 'Markdown',
       disable_web_page_preview: true,
@@ -216,7 +214,17 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       )}% | ${aggressivePump ? 'Aggressive' : 'Conservative'} | ${
         mexcOnly ? 'MEXC-only' : 'With Binance'
       }`;
+if (positions.size < CONFIG.MAX_OPEN_POSITIONS) {
     await openShortPosition(symbol, currentPrice, reason);
+} else {
+    // Bot đã đủ 3 lệnh → chỉ báo tín hiệu, không mở thêm lệnh
+    await sendMessageWithAutoDelete(
+      `⚠️ Bot đã mở tối đa ${CONFIG.MAX_OPEN_POSITIONS} lệnh.\n` +
+      `❗Không mở thêm lệnh mô phỏng.\n` +
+      `📌 Đây chỉ là tín hiệu SHORT tham khảo.`,
+      { parse_mode: "Markdown" }
+    );
+}
   }
 
   // Dừng tracking sau 30 phút hoặc giảm quá sâu
