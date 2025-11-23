@@ -4,7 +4,6 @@
   "description": "Bot Telegram tín hiệu short",
   "main": "bot.js",
   "type": "module",
-
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js"
@@ -22,6 +21,7 @@
     "axios-retry": "^4.5.0",
     "ccxt": "^4.5.11",
     "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
     "node-telegram-bot-api": "^0.66.0"
   },
   "devDependencies": {

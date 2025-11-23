@@ -6,10 +6,10 @@
 import dotenv from 'dotenv';
 import axios from 'axios';
 import https from 'https';
+import axiosRetry from 'axios-retry';
 import TelegramBot from 'node-telegram-bot-api';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -22,10 +22,10 @@ if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
   process.exit(1);
 }
 
-const POLL_MS = parseInt(process.env.POLL_MS || '5000', 10);
-const LOOKBACK_MIN = parseInt(process.env.LOOKBACK_MIN || '600', 10);
+const POLL_MS = parseInt(process.env.POLL_MS || '12000', 10); // tăng nhịp để giảm load API
+const LOOKBACK_MIN = parseInt(process.env.LOOKBACK_MIN || '360', 10);
 
-const FAKE_START_BALANCE = parseFloat(process.env.FAKE_START_BALANCE || '107.50');
+const FAKE_START_BALANCE = parseFloat(process.env.FAKE_START_BALANCE || '121.95');
 const RISK_PER_TRADE = parseFloat(process.env.RISK_PER_TRADE || '0.03');
 const MIN_STAKE = parseFloat(process.env.MIN_STAKE || '5');
 const MAX_TRADES_PER_DAY = parseInt(process.env.MAX_TRADES_PER_DAY || '100', 10);
@@ -63,39 +63,68 @@ const RSI_PERIOD = parseInt(process.env.RSI_PERIOD || '14', 10);
 const RSI_OVERSOLD = parseFloat(process.env.RSI_OVERSOLD || '28');
 const RSI_OVERBOUGHT = parseFloat(process.env.RSI_OVERBOUGHT || '72');
 
-// agent axios
+/* ============== AXIOS (có retry) ============== */
 const axiosInstance = axios.create({
-  timeout: 10000,
+  timeout: 15000,
   httpsAgent: new https.Agent({ keepAlive: true }),
+  headers: { 'User-Agent': 'mexc-prediction-bot/1.0 (+https://github.com/)' },
+});
+axiosRetry(axiosInstance, {
+  retries: 3,
+  retryDelay: axiosRetry.exponentialDelay,
+  retryCondition: (err) =>
+    axiosRetry.isNetworkOrIdempotentRequestError(err) || err.code === 'ECONNABORTED',
 });
 
-// Telegram
+/* ============== TELEGRAM (có retry) ============== */
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 
-// Múi giờ: Asia/Bangkok (UTC+7)
-const TZ_OFFSET_MIN = 7 * 60;
+function escapeHtml(text = '') {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+async function tgSend(text, extra = {}) {
+  const max = 5;
+  let delay = 500;
+  for (let i = 0; i < max; i++) {
+    try {
+      await bot.sendMessage(TELEGRAM_CHAT_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true, ...extra });
+      return;
+    } catch (e) {
+      if (i === max - 1) console.warn('Telegram send fail after retries:', e?.message || e);
+      else await new Promise(r => setTimeout(r, delay));
+      delay *= 2;
+    }
+  }
+}
+
+/* ============== Múi giờ: Asia/Bangkok (UTC+7) ============== */
+const fmtBK = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Bangkok',
+  year: '2-digit', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+  hour12: false,
+});
+function fmtTime(ts) { return fmtBK.format(new Date(ts)); }
+function getBangkokNow() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+}
+function getDayKey(d = getBangkokNow()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 /* ============== TRẠNG THÁI VỐN & LỆNH ============== */
 let balance = FAKE_START_BALANCE;
-let dayKey = getDayKey(); // YYYY-MM-DD theo UTC+7
+let dayKey = getDayKey(); // YYYY-MM-DD theo Asia/Bangkok
 let tradesToday = 0;
 
 const openTrades = []; // {id, symbol, tf, direction, entryPrice, stake, openTime, expireTime}
 const history = [];    // {id, symbol, tf, direction, entryPrice, exitPrice, stake, pnl, outcome, openTime, closeTime}
 
 const lastTradeTime = new Map(); // key `${symbol}_${tf}` -> timestamp ms
-
-/* ============== TIỆN ÍCH THỜI GIAN ============== */
-function getBangkokNow() {
-  const now = new Date();
-  return new Date(now.getTime() + TZ_OFFSET_MIN * 60000 - now.getTimezoneOffset() * 60000);
-}
-function getDayKey(d = getBangkokNow()) {
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
 
 /* ============== API MEXC ============== */
 async function fetchMexc1mKlines(symbol, minutesBack = LOOKBACK_MIN) {
@@ -314,6 +343,8 @@ function openPrediction(symbol, tf, direction, price, minutes) {
   const t = { id, symbol, tf, direction, entryPrice: price, stake, openTime: now, expireTime };
   openTrades.push(t);
   lastTradeTime.set(`${symbol}_${tf}`, now);
+  // log cứng để đối chiếu khi Telegram fail
+  console.log('[OPEN]', t.id, symbol, tf, direction, 'entry=', price, 'stake=', stake, 'expire=', fmtTime(expireTime));
   return t;
 }
 function settleTrade(trade, exitPrice) {
@@ -322,9 +353,9 @@ function settleTrade(trade, exitPrice) {
     ? (exitPrice > trade.entryPrice)
     : (exitPrice < trade.entryPrice);
 
-  // Fix: gain = stake + (stake * payout) nếu WIN (stake gốc + profit)
+  // Gain = stake + profit nếu WIN; 0 nếu LOSE
   const gain = won ? trade.stake + (trade.stake * payout) : 0;
-  const pnl = Math.round((gain - trade.stake) * 100) / 100;  // Net profit = stake * payout nếu WIN
+  const pnl = Math.round((gain - trade.stake) * 100) / 100;  // Net profit
 
   balance = Math.round((balance + gain) * 100) / 100;  // Cộng full gain (stake + profit)
 
@@ -345,25 +376,13 @@ function settleTrade(trade, exitPrice) {
   return rec;
 }
 
-/* ============== THÔNG BÁO TELEGRAM (HTML SAFE) ============== */
-function escapeHtml(text = '') {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-async function tgSend(text, extra = {}) {
-  try {
-    await bot.sendMessage(TELEGRAM_CHAT_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true, ...extra });
-  } catch (e) {
-    console.warn('Telegram send fail', e.message);
-  }
-}
+/* ============== FORMATTERS ============== */
 function fmtMoney(n) { return (n >= 0 ? '+' : '') + '$' + n.toFixed(2); }
-function fmtTime(ts) { return new Date(ts).toLocaleString('en-GB', { hour12: false }); }
 
 /* ============== VÒNG LẶP CHÍNH ============== */
 async function mainLoop() {
   try {
-    // reset theo ngày (UTC+7)
+    // reset theo ngày (Asia/Bangkok)
     const nowKey = getDayKey();
     if (nowKey !== dayKey) {
       dayKey = nowKey;
@@ -373,11 +392,19 @@ async function mainLoop() {
       );
     }
 
-    // lấy 1m candles cho từng symbol một lần
+    // lấy 1m candles cho từng symbol — STAGGER để tránh dồn tải
     const all1m = {};
-    await Promise.all(SYMBOLS.map(async sym => {
+    for (const [idx, sym] of SYMBOLS.entries()) {
+      await new Promise(r => setTimeout(r, idx * 300)); // 0ms, 300ms, 600ms, ...
       all1m[sym] = await fetchMexc1mKlines(sym, LOOKBACK_MIN);
-    }));
+    }
+
+    // Circuit breaker: nếu quá nửa symbols fail → bỏ vòng để tránh quyết định khi thiếu dữ liệu
+    const failed = SYMBOLS.filter(s => !all1m[s]?.length).length;
+    if (failed > SYMBOLS.length / 2) {
+      await tgSend(`⚠️ Dữ liệu MEXC thiếu/timeout (${failed}/${SYMBOLS.length}). Bỏ qua vòng này.`);
+      return;
+    }
 
     for (const symbol of SYMBOLS) {
       const oneMin = all1m[symbol];
@@ -396,7 +423,7 @@ async function mainLoop() {
           const tr = openTrades[i];
           if (tr.symbol !== symbol || tr.tf !== tf) continue;
           if (Date.now() >= tr.expireTime) {
-            // tìm close của candle tf có time >= expireTime
+            // (giữ logic gốc) tìm close của candle tf có time >= expireTime
             const after = tfCandles.find(c => c.time >= tr.expireTime);
             const exitPrice = after ? after.close : tfCandles[tfCandles.length - 1].close;
             const rec = settleTrade(tr, exitPrice);
@@ -434,7 +461,8 @@ async function mainLoop() {
             const rsiTxt = USE_RSI ? `RSI=${(best.note.currRSI ?? 0).toFixed(1)}` : '';
             const volTxt = USE_VOL ? (best.note.volOK ? 'Vol>MA ✅' : 'Vol~MA') : '';
             await tgSend(
-              `🎯 <b>MỞ LỆNH</b> ${escapeHtml(trade.id)} <a href="https://mexc.com/futures/${escapeHtml(symbol)}?type=swap">${escapeHtml(symbol)}</a> (${escapeHtml(tf)})\n` +
+              `🎯 <b>MỞ LỆNH</b> ${escapeHtml(trade.id)} ` +
+              `<a href="https://mexc.com/futures/${escapeHtml(symbol)}?type=swap">${escapeHtml(symbol)}</a> (${escapeHtml(tf)})\n` +
               `Hướng: <b>${escapeHtml(trade.direction)}</b> | Entry: <b>${trade.entryPrice.toFixed(6)}</b> | Stake: <b>$${trade.stake.toFixed(2)}</b>\n` +
               `Điểm hợp lưu: <b>${best.score}</b> (min ${MIN_CONFLUENCE_SCORE}) ${rsiTxt ? '| ' + escapeHtml(rsiTxt) : ''} ${volTxt ? '| ' + escapeHtml(volTxt) : ''}\n` +
               `T/gian: <b>${minutes}</b> phút | Hết hạn: ${fmtTime(trade.expireTime)}\n` +
