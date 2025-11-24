@@ -35,7 +35,7 @@ DCA_PLAN: [
     { roiTrigger: -800, addPercent: 0.04  }, // 8×
     { roiTrigger: -1600, addPercent: 0.08 }, // 16×
   ],
-
+ ENTRY_PERCENT: 0.005, 
   MAX_LOSS_RATIO_FOR_HODL: 0.6,          // Lệnh âm >= 60% balance => dừng DCA, gồng lỗ
   EQUITY_CUT_RATIO: 0.25,                // Equity < 25% * 250$ => bắt đầu cắt lỗ
   MAX_PARTIAL_CUTS: 3,                   // Tối đa 3 lần
