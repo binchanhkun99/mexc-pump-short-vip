@@ -59,7 +59,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
         `🎯 *TRACKING PUMP*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
         `📈 Pump: +${pumpPct.toFixed(2)}% trong 10 phút\n` +
         `💰 Đỉnh tạm thời: $${formatUsd(highestPrice)}\n` +
-        `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 (dễ bị pump & dump)' : 'CÓ BINANCE 🟡'}\n` +
+        `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 ' : 'CÓ BINANCE 🟡'}\n` +
         `⏳ Đang chờ tín hiệu đảo chiều...`;
 
       await sendMessageWithAutoDelete(alertMessage, {
@@ -76,7 +76,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
   // -------- BƯỚC 2: ĐANG TRACK -> TÌM ĐIỂM ĐẢO CHIỀU --------
   const trackData = trackingCoins.get(symbol);
 
-  // cập nhật đỉnh
+  // cập nhật đỉnh nếu có nến cao hơn
   if (currentCandle.high > trackData.peakPrice) {
     trackData.peakPrice = currentCandle.high;
     trackData.peakTime = currentCandle.time;
@@ -120,18 +120,43 @@ async function analyzeForPumpAndReversal(symbol, klines) {
   const hasBearishPattern =
     patterns.isShootingStar || patterns.isBearishEngulfing || patterns.isEveningStar;
 
-  if (!trackData.notifiedReversal && hasReversalSignal) {
+  // ---------- TÍN HIỆU TÂM LÝ "SẮP XẢ" (đỉnh thật sau tracking) ----------
+  const upperWick = currentCandle.high - Math.max(currentCandle.open, currentCandle.close);
+  const bodySize = Math.abs(currentCandle.close - currentCandle.open);
+  const upperWickRatio = bodySize > 0 ? upperWick / bodySize : 0;
+
+  const nearPeakNow =
+    Math.abs(currentCandle.high - trackData.peakPrice) / trackData.peakPrice <= 0.005;
+
+  const closeWeak = currentCandle.close < currentCandle.open || currentCandle.close < ma5;
+
+  const earlyTopSignal =
+    nearPeakNow &&
+    upperWickRatio >= 2 && // bóng trên dài gấp đôi thân
+    closeWeak &&
+    volumeRatio >= 1.8; // volume phải dày hơn bình thường
+
+  // Cho phép trigger đảo chiều nếu:
+  //  - giá giảm >= 5% từ đỉnh (logic cũ)
+  //  - HOẶC có earlyTopSignal và đã giảm ít nhất 2% (đỉnh thật xuất hiện sau tracking)
+  const reversalTriggered =
+    hasReversalSignal || (earlyTopSignal && dropFromPeak >= 2);
+
+  if (!trackData.notifiedReversal && reversalTriggered) {
     let confidence = 0;
 
     // Strength core
     if (hasStrongReversal) confidence += 35;
     else if (dropFromPeak >= Math.abs(CONFIG.REVERSAL_CONFIRMATION_PCT)) confidence += 25;
 
+    // Early top (wick dài + volume dày gần đỉnh)
+    if (earlyTopSignal) confidence += 25;
+
     // Nến
-    if (hasBearishPattern) confidence += 25;
+    if (hasBearishPattern) confidence += 20;
     if (hasDoubleTop) confidence += 20;
 
-    // Volume & MA
+    // Volume & MA & momentum
     if (hasVolumeSpike) confidence += 20;
     if (priceUnderMA) confidence += 15;
     if (consecutiveBearish) confidence += 15;
@@ -172,6 +197,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     if (patterns.isBearishEngulfing) patternsText.push('Bearish Engulfing');
     if (patterns.isEveningStar) patternsText.push('Evening Star');
     if (hasDoubleTop) patternsText.push('Double Top');
+    if (earlyTopSignal && !patterns.isShootingStar) patternsText.push('Long Upper Wick Near Peak');
 
     const msg =
       `🔻 *TÍN HIỆU SHORT ${signalStrength}*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n\n` +
@@ -179,12 +205,13 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       `• Pump gốc: +${trackData.initialPumpPct.toFixed(2)}%\n` +
       `• Giảm từ đỉnh: ${dropFromPeak.toFixed(2)}% (Đỉnh: $${formatUsd(trackData.peakPrice)})\n` +
       `• Giá hiện tại: $${formatUsd(currentPrice)}\n` +
-      `• Volume: x${volumeRatio.toFixed(1)} (${
-        hasVolumeSpike ? 'XẢ MẠNH ⚠️' : 'Bình thường'
-      })\n` +
-      `• MA: ${priceUnderMA ? 'Giá đã chui xuống MA5/10 ✅' : 'Chưa gãy MA'}\n` +
+      `• Volume: x${volumeRatio.toFixed(1)} (${hasVolumeSpike ? 'XẢ MẠNH ⚠️' : 'Bình thường'})\n` +
+      `• MA: ${priceUnderMA ? 'Giá đã chui xuống MA5/10 ✅' : 'Chưa gãy MA rõ ràng'}\n` +
       `• Momentum: ${consecutiveBearish ? '3 nến đỏ liên tiếp ✅' : 'Hỗn hợp'}\n` +
-      (patternsText.length ? `• Pattern: ${patternsText.join(', ')} ✅\n` : '') +
+      (patternsText.length ? `• Pattern / tâm lý nến: ${patternsText.join(', ')} ✅\n` : '') +
+      (earlyTopSignal
+        ? '• Early-top: Wick trên dài gần đỉnh, volume dày → tâm lý đu đỉnh bắt đầu bị xả ❗\n'
+        : '') +
       `\n🎯 *Kịch bản tham khảo:*\n` +
       `• Entry tham chiếu: $${formatUsd(currentPrice)}\n` +
       `• Target 1: -${target1Pct.toFixed(2)}% ($${formatUsd(target1Price)})\n` +
@@ -194,6 +221,8 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       )} (+${(((trackData.peakPrice - currentPrice) / currentPrice) * 100).toFixed(2)}%)\n` +
       `\n⚡ *Risk Level*: ${riskLevel}\n` +
       `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 (ưu tiên bào mạnh)' : 'CÓ BINANCE 🟡'}\n` +
+      `\n🤖 Bot sẽ mô phỏng vào lệnh SHORT với chiến lược DCA/TP/SL bạn đã cấu hình.`;
+
     await sendMessageWithAutoDelete(msg, {
       parse_mode: 'Markdown',
       disable_web_page_preview: true,
@@ -206,7 +235,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       )}%, Confidence: ${confidence}%, Aggressive: ${aggressivePump}, MexcOnly: ${mexcOnly})`
     );
 
-    // Mở lệnh short mô phỏng
+    // Mở lệnh short mô phỏng (account.js sẽ tự kiểm tra đã đủ 3 lệnh chưa)
     const reason =
       `${signalStrength} | pump ${trackData.initialPumpPct.toFixed(1)}% | ` +
       `dropFromPeak ${dropFromPeak.toFixed(1)}% | conf ${confidence.toFixed(
@@ -214,17 +243,8 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       )}% | ${aggressivePump ? 'Aggressive' : 'Conservative'} | ${
         mexcOnly ? 'MEXC-only' : 'With Binance'
       }`;
-if (positions.size < CONFIG.MAX_OPEN_POSITIONS) {
+
     await openShortPosition(symbol, currentPrice, reason);
-} else {
-    // Bot đã đủ 3 lệnh → chỉ báo tín hiệu, không mở thêm lệnh
-    await sendMessageWithAutoDelete(
-      `⚠️ Bot đã mở tối đa ${CONFIG.MAX_OPEN_POSITIONS} lệnh.\n` +
-      `❗Không mở thêm lệnh mô phỏng.\n` +
-      `📌 Đây chỉ là tín hiệu SHORT tham khảo.`,
-      { parse_mode: "Markdown" }
-    );
-}
   }
 
   // Dừng tracking sau 30 phút hoặc giảm quá sâu
@@ -243,9 +263,7 @@ export async function checkAndAlert() {
     return;
   }
 
-  console.log(
-    `🔍 Quét ${tickers.length} coin | Tracking: ${trackingCoins.size}`
-  );
+  console.log(`🔍 Quét ${tickers.length} coin | Tracking: ${trackingCoins.size}`);
 
   const symbols = tickers.map(t => t.symbol);
   await mapWithRateLimit(symbols, async symbol => {

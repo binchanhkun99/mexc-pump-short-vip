@@ -32,7 +32,7 @@ export function recomputeEquity() {
 // ---------- Notify ----------
 export async function notifyPositionEvent(title, symbol, bodyLines) {
   const msg =
-    `${title}: [${symbol}](https://mexc.com/futures/${symbol}?type=swap)\n` +
+    `${title}: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
     bodyLines.join('\n') +
     `\n\n💰 Balance: $${formatUsd(accountState.walletBalance)} | Equity: $${formatUsd(accountState.equity)}\n` +
     `📊 Open positions: ${positions.size}`;
@@ -160,13 +160,23 @@ export async function updatePositionWithPrice(symbol, currentPrice, ma10) {
 
 // ---------- Mở lệnh SHORT ----------
 export async function openShortPosition(symbol, currentPrice, context) {
+  // Nếu đã mở tối đa 3 lệnh -> KHÔNG mở thêm, nhưng vẫn phải gửi tín hiệu
   if (positions.size >= CONFIG.MAX_OPEN_POSITIONS) {
-    console.log(`⛔ Đã đủ ${CONFIG.MAX_OPEN_POSITIONS} lệnh, bỏ qua ${symbol}`);
-    return;
+    await notifyPositionEvent('⚠️ FULL VỊ THẾ', symbol, [
+      `• Bot đã mở tối đa ${CONFIG.MAX_OPEN_POSITIONS} lệnh.`,
+      `• KHÔNG mở thêm vị thế mới.`,
+      `• Đây chỉ là tín hiệu SHORT giúp bạn vào tay nếu muốn.`,
+      `• Điểm vào lệnh tham chiếu: $${formatUsd(currentPrice)}`,
+      `• Lý do tín hiệu: ${context}`,
+    ]);
+    return; // Không mở lệnh mô phỏng
   }
+
+  // Nếu đã có lệnh với coin này rồi -> không mở thêm lệnh mới
   if (positions.has(symbol)) return;
 
-  const margin = accountState.walletBalance * 0.005; // 0.5% tài khoản
+  // Margin = 0.5% tài khoản (hoặc % bạn cấu hình)
+  const margin = accountState.walletBalance * CONFIG.ENTRY_PERCENT; 
   if (margin <= 0) return;
 
   const notional = margin * CONFIG.LEVERAGE;
@@ -193,9 +203,10 @@ export async function openShortPosition(symbol, currentPrice, context) {
   positions.set(symbol, pos);
   recomputeEquity();
 
+  // Gửi log về telegram
   await notifyPositionEvent('🚀 OPEN SHORT', symbol, [
     `• Entry SHORT: $${formatUsd(currentPrice)}`,
-    `• Margin: $${formatUsd(margin)} (0.50% tài khoản)`,
+    `• Margin: $${formatUsd(margin)} (${(CONFIG.ENTRY_PERCENT * 100).toFixed(2)}% tài khoản)`,
     `• Đòn bẩy: x${CONFIG.LEVERAGE}`,
     `• Notional ~ $${formatUsd(notional)}`,
     `• Lý do vào lệnh: ${context}`,
