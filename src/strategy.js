@@ -57,10 +57,10 @@ async function analyzeForPumpAndReversal(symbol, klines) {
 
       const alertMessage =
         `🎯 *TRACKING PUMP*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
-        `📈 Pump: +${pumpPct.toFixed(2)}% trong 10 phút\n` +
-        `💰 Đỉnh tạm thời: $${formatUsd(highestPrice)}\n` +
-        `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 ' : 'CÓ BINANCE 🟡'}\n` +
-        `⏳ Đang chờ tín hiệu đảo chiều...`;
+        `Pump: +${pumpPct.toFixed(2)}% trong 10 phút\n` +
+        `Đỉnh tạm thời: $${formatUsd(highestPrice)}\n` +
+        `${mexcOnly ? 'CHỈ MEXC 🟢 ' : 'CÓ BINANCE 🟡'}\n` +
+        `Đang chờ tín hiệu đảo chiều...`;
 
       await sendMessageWithAutoDelete(alertMessage, {
         parse_mode: 'Markdown',
@@ -221,7 +221,6 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       )} (+${(((trackData.peakPrice - currentPrice) / currentPrice) * 100).toFixed(2)}%)\n` +
       `\n⚡ *Risk Level*: ${riskLevel}\n` +
       `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 (ưu tiên bào mạnh)' : 'CÓ BINANCE 🟡'}\n` +
-      `\n🤖 Bot sẽ mô phỏng vào lệnh SHORT với chiến lược DCA/TP/SL bạn đã cấu hình.`;
 
     await sendMessageWithAutoDelete(msg, {
       parse_mode: 'Markdown',
