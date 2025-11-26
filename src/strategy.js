@@ -6,6 +6,7 @@ import {
   fetchKlinesWithRetry,
   isMexcExclusive,
   mapWithRateLimit,
+  fetchFundingRate, // <-- thêm vào để dùng funding
 } from './exchange.js';
 import { updatePositionWithPrice, openShortPosition } from './account.js';
 import { sendMessageWithAutoDelete, cleanupOldMessages } from './telegram.js';
@@ -203,6 +204,22 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     if (hasDoubleTop) patternsText.push('Double Top');
     if (earlyTopSignal && !patterns.isShootingStar) patternsText.push('Long Upper Wick Near Peak');
 
+    // ===== FUNDING RATE CHECK =====
+    let fundingRate = 0;
+    try {
+      fundingRate = await fetchFundingRate(symbol);
+    } catch (e) {
+      fundingRate = 0;
+    }
+
+    const fundingLimit = CONFIG.FUNDING_RATE_LIMIT ?? 0.015;
+    const fundingPctStr = (fundingRate * 100).toFixed(4);
+    const fundingLine =
+      `• Funding: ${fundingPctStr}%` +
+      (fundingRate > fundingLimit
+        ? ` (cao hơn ngưỡng ${(fundingLimit * 100).toFixed(2)}% → không vào lệnh short)\n`
+        : `\n`);
+
     const msg =
       `🔻 *TÍN HIỆU SHORT ${signalStrength}*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n\n` +
       `**Phân tích:**\n` +
@@ -216,6 +233,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       (earlyTopSignal
         ? '• Early-top: Wick trên dài gần đỉnh, volume dày → tâm lý đu đỉnh bắt đầu bị xả ❗\n'
         : '') +
+      fundingLine +
       `\n🎯 *Kịch bản tham khảo:*\n` +
       `• Entry tham chiếu: $${formatUsd(currentPrice)}\n` +
       `• Target 1: -${target1Pct.toFixed(2)}% ($${formatUsd(target1Price)})\n` +
@@ -235,8 +253,16 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     console.log(
       `🔔 SHORT SIGNAL: ${symbol} (Giảm ${dropFromPeak.toFixed(
         2
-      )}%, Confidence: ${confidence}%, Aggressive: ${aggressivePump}, MexcOnly: ${mexcOnly})`
+      )}%, Confidence: ${confidence}%, Aggressive: ${aggressivePump}, MexcOnly: ${mexcOnly}, Funding: ${fundingPctStr}%)`
     );
+
+    // Nếu funding rate quá cao -> KHÔNG mở lệnh short
+    if (fundingRate > fundingLimit) {
+      console.log(
+        `⛔ Không mở lệnh SHORT ${symbol} do funding rate = ${fundingPctStr}% > ${(fundingLimit * 100).toFixed(2)}%`
+      );
+      return;
+    }
 
     // Mở lệnh short mô phỏng (account.js sẽ tự kiểm tra đã đủ 3 lệnh chưa)
     const reason =
@@ -244,7 +270,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       `dropFromPeak ${dropFromPeak.toFixed(1)}% | conf ${confidence.toFixed(
         0
       )}% | ${aggressivePump ? 'Aggressive' : 'Conservative'} | ` +
-      `${mexcOnly ? 'MEXC-only' : 'With Binance'}`;
+      `${mexcOnly ? 'MEXC-only' : 'With Binance'} | FR ${fundingPctStr}%`;
 
     await openShortPosition(symbol, currentPrice, reason);
   }

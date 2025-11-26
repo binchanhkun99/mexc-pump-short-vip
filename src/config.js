@@ -44,5 +44,9 @@ DCA_PLAN: [
 
   // ---- TAKE PROFIT THEO TREND ----
   MIN_PROFIT_ROI_FOR_TRAIL: 80,          // ROI >= 80% bắt đầu trailing
-  TRAIL_DROP_FROM_MAX_ROI: 40,           // Tụt khỏi đỉnh 40% => TP
+  TRAIL_DROP_FROM_MAX_ROI: 40,     
+  DCA_MULTIPLIER: 2,
+  FUNDING_RATE_LIMIT: 0.015,
+
+      // Tụt khỏi đỉnh 40% => TP
 };

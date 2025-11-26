@@ -93,6 +93,38 @@ export async function fetchKlinesWithRetry(symbol, retries = 3) {
   return [];
 }
 
+// ==========================================================
+//          ★★★ FETCH FUNDING RATE (MỚI THÊM) ★★★
+// ==========================================================
+// API MEXC Futures:
+// GET https://contract.mexc.com/api/v1/contract/fundingRate?symbol=BTC_USDT
+// Response:
+// {
+//   "success": true,
+//   "code": 0,
+//   "data": {
+//     "symbol": "BTC_USDT",
+//     "fundingRate": "0.000123",
+//     "settleTime": 1700000000
+//   }
+// }
+export async function fetchFundingRate(symbol) {
+  try {
+    const url = `https://contract.mexc.com/api/v1/contract/fundingRate`;
+    const res = await axiosInstance.get(url, { params: { symbol } });
+
+    if (!res.data?.success || !res.data.data?.fundingRate) return 0;
+
+    const rate = Number(res.data.data.fundingRate);
+    if (!isFinite(rate)) return 0;
+
+    return rate; // số dạng 0.000123 = 0.0123%
+  } catch (err) {
+    console.warn(`⚠️ Lỗi fetchFundingRate(${symbol}):`, err.message);
+    return 0;
+  }
+}
+
 export async function mapWithRateLimit(items, fn) {
   const results = [];
   let queue = 0;
