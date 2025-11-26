@@ -84,10 +84,14 @@ async function analyzeForPumpAndReversal(symbol, klines) {
 
   const dropFromPeak = ((trackData.peakPrice - currentPrice) / trackData.peakPrice) * 100;
 
-  // volume
+  // ---------- VOLUME ----------
   const avgVol9 =
     last10.slice(0, -1).reduce((sum, k) => sum + k.volume, 0) / Math.max(1, last10.length - 1);
   const volumeRatio = currentCandle.volume / (avgVol9 || 1);
+
+  // ----- FIX BUG: crazy pump candle (không dùng k.pct nữa) -----
+  const hasCrazy1mCandle =
+    last10.some(k => Math.abs((k.close - k.open) / k.open) * 100 >= CONFIG.CRAZY_CANDLE_PCT);
 
   const previousCandle = klines[klines.length - 2];
   const patterns = detectBearishPatterns(currentCandle, previousCandle);
@@ -98,7 +102,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
   const last3 = last10.slice(-3);
   const consecutiveBearish = last3.every(k => k.close < k.open);
 
-  // Double top gần đỉnh (đặc trưng kiểu đẩy láo -> thất bại break high)
+  // ------------ DOUBLE TOP ------------
   let hasDoubleTop = false;
   if (klines.length >= 4) {
     const c1 = klines[klines.length - 3];
@@ -108,7 +112,6 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     if (nearPeak1 && nearPeak2 && c2.close < c2.open) hasDoubleTop = true;
   }
 
-  const hasCrazy1mCandle = last10.some(k => Math.abs(k.pct) >= CONFIG.CRAZY_CANDLE_PCT);
   const aggressivePump =
     trackData.initialPumpPct >= CONFIG.STRONG_PUMP_THRESHOLD ||
     hasCrazy1mCandle ||
@@ -126,7 +129,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
   const upperWickRatio = bodySize > 0 ? upperWick / bodySize : 0;
 
   const nearPeakNow =
-    Math.abs(currentCandle.high - trackData.peakPrice) / trackData.peakPrice <= 0.005;
+    Math.abs(currentCandle.high - trackData.peakPrice) / trackData.peakPrice <= 0.006; // ~0.6%
 
   const closeWeak = currentCandle.close < currentCandle.open || currentCandle.close < ma5;
 
@@ -137,17 +140,18 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     volumeRatio >= 1.8; // volume phải dày hơn bình thường
 
   // Cho phép trigger đảo chiều nếu:
-  //  - giá giảm >= 5% từ đỉnh (logic cũ)
-  //  - HOẶC có earlyTopSignal và đã giảm ít nhất 2% (đỉnh thật xuất hiện sau tracking)
+  //  - giá giảm >= REVERSAL_CONFIRMATION_PCT từ đỉnh (logic cũ)
+  //  - HOẶC có earlyTopSignal và đã giảm ít nhất ~1.5% (đỉnh thật xuất hiện sau tracking)
   const reversalTriggered =
-    hasReversalSignal || (earlyTopSignal && dropFromPeak >= 2);
+    hasReversalSignal || (earlyTopSignal && dropFromPeak >= 1.5);
 
   if (!trackData.notifiedReversal && reversalTriggered) {
     let confidence = 0;
 
-    // Strength core
+    // Strength core theo mức giảm
     if (hasStrongReversal) confidence += 35;
     else if (dropFromPeak >= Math.abs(CONFIG.REVERSAL_CONFIRMATION_PCT)) confidence += 25;
+    else if (dropFromPeak >= 2) confidence += 15;
 
     // Early top (wick dài + volume dày gần đỉnh)
     if (earlyTopSignal) confidence += 25;
@@ -167,9 +171,9 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     // Ngưỡng tối thiểu: pump đều cần chắc tay hơn pump spike
     const minConfidence = aggressivePump
       ? mexcOnly
-        ? 50 // coin "lúa non" trên MEXC -> vào nhanh bắt đỉnh
-        : 55
-      : 70;
+        ? 45 // coin "lúa non" trên MEXC -> vào nhanh bắt đỉnh
+        : 50
+      : 65;
 
     if (confidence < minConfidence) return;
 
@@ -220,7 +224,7 @@ async function analyzeForPumpAndReversal(symbol, klines) {
         trackData.peakPrice
       )} (+${(((trackData.peakPrice - currentPrice) / currentPrice) * 100).toFixed(2)}%)\n` +
       `\n⚡ *Risk Level*: ${riskLevel}\n` +
-      `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 (ưu tiên bào mạnh)' : 'CÓ BINANCE 🟡'}\n` +
+      `🏪 ${mexcOnly ? 'CHỈ MEXC 🟢 (ưu tiên bào mạnh)' : 'CÓ BINANCE 🟡'}\n`;
 
     await sendMessageWithAutoDelete(msg, {
       parse_mode: 'Markdown',
@@ -239,9 +243,8 @@ async function analyzeForPumpAndReversal(symbol, klines) {
       `${signalStrength} | pump ${trackData.initialPumpPct.toFixed(1)}% | ` +
       `dropFromPeak ${dropFromPeak.toFixed(1)}% | conf ${confidence.toFixed(
         0
-      )}% | ${aggressivePump ? 'Aggressive' : 'Conservative'} | ${
-        mexcOnly ? 'MEXC-only' : 'With Binance'
-      }`;
+      )}% | ${aggressivePump ? 'Aggressive' : 'Conservative'} | ` +
+      `${mexcOnly ? 'MEXC-only' : 'With Binance'}`;
 
     await openShortPosition(symbol, currentPrice, reason);
   }
