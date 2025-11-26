@@ -9,25 +9,27 @@ if (!CONFIG.TELEGRAM_TOKEN || !CONFIG.TELEGRAM_CHAT_ID) {
 
 export const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: false });
 
+// Không lưu message_id nữa → không có gì để xoá
 const sentMessages = [];
 
+/**
+ * Gửi tin nhắn nhưng KHÔNG auto delete
+ * (Tên hàm giữ nguyên để không phải sửa strategy/account)
+ */
 export async function sendMessageWithAutoDelete(message, options) {
   try {
-    const sent = await bot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, message, options);
-    sentMessages.push({ id: sent.message_id, time: Date.now() });
+    await bot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, message, options);
+    // Không push vào sentMessages => sẽ không bị xóa
   } catch (err) {
     console.error('Lỗi gửi Telegram:', err.message);
   }
 }
 
+/**
+ * cleanupOldMessages vẫn được gọi trong strategy
+ * nhưng KHÔNG xoá gì cả, để tránh lỗi
+ */
 export async function cleanupOldMessages() {
-  const now = Date.now();
-  const toDelete = sentMessages.filter(m => now - m.time > CONFIG.MESSAGE_LIFETIME);
-  for (const msg of toDelete) {
-    try {
-      await bot.deleteMessage(CONFIG.TELEGRAM_CHAT_ID, msg.id);
-    } catch { /* ignore */ }
-  }
-  const remain = sentMessages.filter(m => now - m.time <= CONFIG.MESSAGE_LIFETIME);
-  sentMessages.splice(0, sentMessages.length, ...remain);
+  // Do nothing → không xoá tin nhắn nào
+  return;
 }
