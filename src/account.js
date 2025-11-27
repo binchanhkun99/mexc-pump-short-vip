@@ -35,6 +35,7 @@ export async function notifyPositionEvent(title, symbol, body) {
     `${title}: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
     body.join('\n') +
     `\n\nBalance: $${usd(accountState.walletBalance)} | Equity: $${usd(accountState.equity)}` +
+    `\nLãi đã rút : 100$ - Lỗ: 0`+
     `\nOpen positions: ${positions.size}`;
   await sendMessageWithAutoDelete(msg, {
     parse_mode: "Markdown",
@@ -82,37 +83,50 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   // =========================================================
   //              2) DCA (MULTIPLIER x2)
   // =========================================================
-  if (!pos.inHodlMode && pos.dcaIndex < CONFIG.DCA_PLAN.length) {
-    const plan = CONFIG.DCA_PLAN[pos.dcaIndex];
+if (!pos.inHodlMode && pos.dcaIndex < CONFIG.DCA_PLAN.length) {
+  const plan = CONFIG.DCA_PLAN[pos.dcaIndex];
 
-    if (pos.roi <= plan.roiTrigger) {
-      const addQty = pos.quantity * CONFIG.DCA_MULTIPLIER;
-      const addNotional = addQty * price;
-      const addMargin = addNotional / CONFIG.LEVERAGE;
+  if (pos.roi <= plan.roiTrigger) {
 
-      // Recalculate entry price
-      const costOld = pos.entryPrice * pos.quantity;
-      const costAdd = price * addQty;
-      pos.quantity += addQty;
-      pos.notional += addNotional;
-      pos.margin += addMargin;
-      pos.entryPrice = (costOld + costAdd) / pos.quantity;
+    const oldEntry = pos.entryPrice;        // Entry cũ
+    const dcaPrice = price;                 // Giá DCA lần này
 
-      pos.dcaIndex++;
-      pos.roi = calcShortRoi(pos.entryPrice, price);
-      pos.pnl = pos.margin * (pos.roi / 100);
+    const addQty = pos.quantity * CONFIG.DCA_MULTIPLIER;
+    const addNotional = addQty * price;
+    const addMargin = addNotional / CONFIG.LEVERAGE;
 
-      recomputeEquity();
+    // Recalculate entry price (WAP)
+    const costOld = pos.entryPrice * pos.quantity;
+    const costAdd = price * addQty;
 
-      await notifyPositionEvent("➕ DCA", symbol, [
-        `• DCA cấp số nhân: x${CONFIG.DCA_MULTIPLIER}`,
-        `• Thêm Qty: ${usd(addQty)} | Margin +$${usd(addMargin)}`,
-        `• Entry mới: $${usd(pos.entryPrice)}`,
-        `• ROI mới: ${pct(pos.roi)}`,
-        `• DCA level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
-      ]);
-    }
+    const newQty = pos.quantity + addQty;
+    const newEntry = (costOld + costAdd) / newQty;
+
+    // Apply to position
+    pos.entryPrice = newEntry;
+    pos.quantity = newQty;
+    pos.margin += addMargin;
+    pos.notional += addNotional;
+
+    pos.dcaIndex++;
+
+    // Recompute ROI / PNL
+    pos.roi = calcShortRoi(pos.entryPrice, price);
+    pos.pnl = pos.margin * (pos.roi / 100);
+
+    recomputeEquity();
+
+    await notifyPositionEvent("➕ DCA", symbol, [
+      `• DCA cấp số nhân: x${CONFIG.DCA_MULTIPLIER}`,
+      `• Entry cũ: $${usd(oldEntry)}`,
+      `• Giá DCA: $${usd(dcaPrice)}`,
+      `• Entry mới: $${usd(newEntry)}`,           // <-- giá trung bình mới
+      `• Thêm Qty: ${usd(addQty)} | Margin +$${usd(addMargin)}`,
+      `• ROI sau DCA: ${pct(pos.roi)}`,
+      `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
+    ]);
   }
+}
 
   // =========================================================
   //      3) PARTIAL CUT — WHEN EQUITY < 25% VỐN CƠ SỞ
