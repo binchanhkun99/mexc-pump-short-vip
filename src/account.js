@@ -120,9 +120,9 @@ if (!pos.inHodlMode && pos.dcaIndex < CONFIG.DCA_PLAN.length) {
       `• DCA cấp số nhân: x${CONFIG.DCA_MULTIPLIER}`,
       `• Entry cũ: $${usd(oldEntry)}`,
       `• Giá DCA: $${usd(dcaPrice)}`,
-      `• Entry mới: $${usd(newEntry)}`,           // <-- giá trung bình mới
-      `• Thêm Qty: ${usd(addQty)} | Margin +$${usd(addMargin)}`,
-      `• ROI sau DCA: ${pct(pos.roi)}`,
+      `• Entry mới: $${usd(newEntry)}`,           
+      `• P/L hiện tại: $${usd(pos.pnl)} (${pct(pos.roi)})`,  
+      `• Margin thêm: $${usd(addMargin)}`,
       `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
     ]);
   }
