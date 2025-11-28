@@ -32,16 +32,51 @@ export function isMexcExclusive(mexcSymbol) {
 
 export async function fetchAllTickers() {
   try {
-    const response = await axiosInstance.get('https://contract.mexc.com/api/v1/contract/ticker');
-    if (response.data?.success && Array.isArray(response.data.data)) {
-      const filtered = response.data.data
-        .filter(t => t.symbol?.endsWith('_USDT') && t.amount24 > CONFIG.MIN_VOLUME_USDT);
-      return filtered.sort((a, b) => (b.amount24 || 0) - (a.amount24 || 0));
-    }
+    const res = await axios.get(
+      "https://contract.mexc.com/api/v1/contract/ticker"
+    );
+
+    if (!res.data?.success || !Array.isArray(res.data.data)) return [];
+
+    const raw = res.data.data;
+
+    const filtered = raw
+      .filter(
+        t =>
+          t.symbol?.endsWith("_USDT") &&
+          parseFloat(t.amount24) >= CONFIG.MIN_VOLUME_USDT
+      )
+      .map(t => ({
+        symbol: t.symbol,
+        lastPrice: parseFloat(t.lastPrice),
+
+        // ----- bid / ask -----
+        bid: parseFloat(t.bid1),
+        ask: parseFloat(t.ask1),
+
+        // ----- funding rate -----
+        // decimal form (0.0007 = 0.07%)
+        fundingRate: parseFloat(t.fundingRate || 0),
+
+        // ----- volume -----
+        volume24: parseFloat(t.volume24),
+        amount24: parseFloat(t.amount24),
+
+        fairPrice: parseFloat(t.fairPrice),
+        indexPrice: parseFloat(t.indexPrice),
+
+        // optional useful fields
+        // riseFallRate: parseFloat(t.riseFallRate),
+        // riseFallValue: parseFloat(t.riseFallValue),
+        // holdVol: parseFloat(t.holdVol),
+      }));
+
+    // sort descending by amount24 (liquidity priority)
+    return filtered.sort((a, b) => b.amount24 - a.amount24);
   } catch (err) {
-    console.error('Lỗi fetch tickers:', err.message);
+    console.error("Lỗi fetch tickers:", err.message);
+    return [];
   }
-  return [];
 }
 
 export async function fetchKlinesWithRetry(symbol, retries = 3) {

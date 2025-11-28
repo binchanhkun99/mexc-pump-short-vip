@@ -6,7 +6,6 @@ import {
   fetchKlinesWithRetry,
   isMexcExclusive,
   mapWithRateLimit,
-  fetchFundingRate, // <-- thêm vào để dùng funding
 } from './exchange.js';
 import { updatePositionWithPrice, openShortPosition } from './account.js';
 import { sendMessageWithAutoDelete, cleanupOldMessages } from './telegram.js';
@@ -20,7 +19,7 @@ function formatUsd(v) {
 }
 
 // -------- PHÂN TÍCH CHIẾN LƯỢC CHO MỖI COIN --------
-async function analyzeForPumpAndReversal(symbol, klines) {
+async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   if (!klines || klines.length < 15) return;
 
   const mexcOnly = isMexcExclusive(symbol);
@@ -31,6 +30,46 @@ async function analyzeForPumpAndReversal(symbol, klines) {
 
   // Cập nhật PnL / DCA / TP / SL nếu đang có lệnh
   await updatePositionWithPrice(symbol, currentPrice, ma10);
+  // ===== FUNDING & SPREAD TỪ TICKERS =====
+  const ticker = tickers.find(t => t.symbol === symbol);
+  if (!ticker) return;
+
+  const bid = parseFloat(ticker.bid || ticker.bid1 || 0);
+  const ask = parseFloat(ticker.ask || ticker.ask1 || 0);
+  const fundingRate = parseFloat(ticker.fundingRate || 0);
+
+  let spreadPct = 0;
+  if (bid > 0 && ask > 0) {
+    spreadPct = ((ask - bid) / bid) * 100;
+  }
+
+const frLimitPos = CONFIG.FUNDING_RATE_LIMIT_POSITIVE ?? 0.015;   // +1.5%
+const frLimitNeg = CONFIG.FUNDING_RATE_LIMIT_NEGATIVE ?? -0.015;  // -1.5%
+const fundingPctStr = (fundingRate * 100).toFixed(4);
+
+  // Spread filter
+  if (spreadPct >= CONFIG.MAX_SPREAD_PCT) {
+    await sendMessageWithAutoDelete(
+      `⚠️ Spread ${spreadPct.toFixed(2)}% quá lớn → bỏ qua ${symbol}`
+    );
+    return;
+  }
+
+// Funding dương mạnh → tránh short
+if (fundingRate > frLimitPos) {
+  await sendMessageWithAutoDelete(
+    `⚠️ Funding ${fundingPctStr}% > +${(frLimitPos * 100).toFixed(2)}% → không SHORT ${symbol}`
+  );
+  return;
+}
+
+// Funding âm quá sâu → tránh short
+if (fundingRate < frLimitNeg) {
+  await sendMessageWithAutoDelete(
+    `⚠️ Funding ${fundingPctStr}% < ${(frLimitNeg * 100).toFixed(2)}% → không SHORT ${symbol}`
+  );
+  return;
+}
 
   const last10 = klines.slice(-10);
   const firstPrice = last10[0].open;
@@ -204,21 +243,18 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     if (hasDoubleTop) patternsText.push('Double Top');
     if (earlyTopSignal && !patterns.isShootingStar) patternsText.push('Long Upper Wick Near Peak');
 
-    // ===== FUNDING RATE CHECK =====
-    let fundingRate = 0;
-    try {
-      fundingRate = await fetchFundingRate(symbol);
-    } catch (e) {
-      fundingRate = 0;
+    const fundingLimitPos = CONFIG.FUNDING_RATE_LIMIT_POSITIVE ?? 0.015;   // +1.5%
+    const fundingLimitNeg = CONFIG.FUNDING_RATE_LIMIT_NEGATIVE ?? -0.015;  // -1.5%
+
+    let fundingLine = `• Funding: ${fundingPctStr}%\n`;
+
+    if (fundingRate > fundingLimitPos) {
+      fundingLine = `• Funding: ${fundingPctStr}% (cao hơn ngưỡng +${(fundingLimitPos * 100).toFixed(2)}% → không vào short)\n`;
     }
 
-    const fundingLimit = CONFIG.FUNDING_RATE_LIMIT ?? 0.015;
-    const fundingPctStr = (fundingRate * 100).toFixed(4);
-    const fundingLine =
-      `• Funding: ${fundingPctStr}%` +
-      (fundingRate > fundingLimit
-        ? ` (cao hơn ngưỡng ${(fundingLimit * 100).toFixed(2)}% → không vào lệnh short)\n`
-        : `\n`);
+    if (fundingRate < fundingLimitNeg) {
+      fundingLine = `• Funding: ${fundingPctStr}% (âm mạnh hơn ${(fundingLimitNeg * 100).toFixed(2)}% → không vào short)\n`;
+    }
 
     const msg =
       `🔻 *TÍN HIỆU SHORT ${signalStrength}*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n\n` +
@@ -257,9 +293,9 @@ async function analyzeForPumpAndReversal(symbol, klines) {
     );
 
     // Nếu funding rate quá cao -> KHÔNG mở lệnh short
-    if (fundingRate > fundingLimit) {
+    if (fundingRate > frLimitPos || fundingRate < frLimitNeg) {
       console.log(
-        `⛔ Không mở lệnh SHORT ${symbol} do funding rate = ${fundingPctStr}% > ${(fundingLimit * 100).toFixed(2)}%`
+          `⛔ Không mở SHORT ${symbol} do funding=${fundingPctStr}% vượt giới hạn`
       );
       return;
     }
@@ -296,7 +332,7 @@ export async function checkAndAlert() {
   const symbols = tickers.map(t => t.symbol);
   await mapWithRateLimit(symbols, async symbol => {
     const klines = await fetchKlinesWithRetry(symbol);
-    if (klines?.length >= 15) await analyzeForPumpAndReversal(symbol, klines);
+    if (klines?.length >= 15) await analyzeForPumpAndReversal(symbol, klines, tickers);
   });
 
   await cleanupOldMessages();

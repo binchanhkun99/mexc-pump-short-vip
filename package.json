@@ -21,6 +21,7 @@
     "axios-retry": "^4.5.0",
     "ccxt": "^4.5.11",
     "dotenv": "^16.4.5",
+    "https-proxy-agent": "^7.0.6",
     "node-fetch": "^3.3.2",
     "node-telegram-bot-api": "^0.66.0"
   },
