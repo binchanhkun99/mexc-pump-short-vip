@@ -174,17 +174,54 @@ async function getContractInfo(symbol) {
 }
 
 // Round volume
-function roundVolume(quantity, precision, quantityUnit = 1) {
+// src/mexc-api.js - CHỈ SỬA PHẦN LÀM TRÒN
+
+// Round volume - FIX LÀM TRÒN VỀ 0
+function roundVolume(quantity, precision, quantityUnit = 1, contractMultiplier = 1) {
+  console.log(`🔧 Rounding volume: ${quantity}, precision: ${precision}, unit: ${quantityUnit}, multiplier: ${contractMultiplier}`);
+  
+  // Tính số contracts thực tế
+  const contracts = quantity / contractMultiplier;
+  
+  console.log(`   Raw contracts: ${contracts}`);
+  
   if (precision === 0) {
-    const rounded = Math.round(quantity);
-    return Math.floor(rounded / quantityUnit) * quantityUnit;
+    // For precision 0, round to nearest integer
+    const roundedContracts = Math.round(contracts);
+    // Ensure it's multiple of quantityUnit
+    const finalContracts = Math.floor(roundedContracts / quantityUnit) * quantityUnit;
+    // Convert back to coins
+    const finalQuantity = finalContracts * contractMultiplier;
+    
+    console.log(`   Rounded contracts: ${roundedContracts} → Final contracts: ${finalContracts} → Final quantity: ${finalQuantity}`);
+    
+    // QUAN TRỌNG: Nếu finalQuantity = 0, dùng ít nhất 1 contract
+    if (finalQuantity <= 0 && contracts > 0) {
+      const minQuantity = quantityUnit * contractMultiplier;
+      console.log(`   ⚠️  Quantity rounded to 0, using minimum: ${minQuantity}`);
+      return minQuantity;
+    }
+    
+    return finalQuantity;
   } else {
+    // For decimal precision
     const factor = Math.pow(10, precision);
-    const rounded = Math.round(quantity * factor) / factor;
-    return Math.floor(rounded / quantityUnit) * quantityUnit;
+    const roundedContracts = Math.round(contracts * factor) / factor;
+    const finalContracts = Math.floor(roundedContracts / quantityUnit) * quantityUnit;
+    const finalQuantity = finalContracts * contractMultiplier;
+    
+    console.log(`   Rounded contracts: ${roundedContracts} → Final contracts: ${finalContracts} → Final quantity: ${finalQuantity}`);
+    
+    // QUAN TRỌNG: Nếu finalQuantity = 0, dùng ít nhất 1 contract
+    if (finalQuantity <= 0 && contracts > 0) {
+      const minQuantity = quantityUnit * contractMultiplier;
+      console.log(`   ⚠️  Quantity rounded to 0, using minimum: ${minQuantity}`);
+      return minQuantity;
+    }
+    
+    return finalQuantity;
   }
 }
-
 // Calculate position size với contract multiplier
 async function calculatePositionSize(symbol, positionPercent, confidence = 1) {
   const balance = await getFuturesBalance();
