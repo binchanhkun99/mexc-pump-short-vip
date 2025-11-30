@@ -290,52 +290,52 @@ async function openPosition(symbol, quantity, side = 'SHORT', signalType = '') {
   }
 }
 
-// Get open positions
 async function getOpenPositions(symbol = null) {
   try {
-    let formattedSymbol = symbol;
-    if (symbol && !symbol.includes('_USDT')) {
-      formattedSymbol = symbol.replace('USDT', '_USDT');
+    // Check cache
+    const now = Date.now();
+    if (positionsCache && (now - positionsCacheTime) < CACHE_DURATION) {
+      if (!symbol) return positionsCache;
+      
+      // Filter by symbol nếu có
+      return positionsCache.filter(p => 
+        !symbol || p.symbol === symbol.replace('USDT', '_USDT')
+      );
     }
 
-    console.log(`🔍 Fetching positions via SDK: ${formattedSymbol || 'ALL'}`);
+    console.log('🔍 Fetching all positions via SDK...');
     
-    // DÙNG SDK METHOD
-    const response = await client.getOpenPositions(formattedSymbol);
+    const response = await client.getOpenPositions();
     
-    console.log('📊 Positions SDK response:', JSON.stringify(response, null, 2));
+    let positionsData = [];
     
-    // Xử lý response structure khác nhau
+    // Xử lý response structure
     if (response && Array.isArray(response)) {
-      return response;
-    }
-    if (response && response.data && Array.isArray(response.data)) {
-      return response.data;
-    }
-    if (response && response.positions && Array.isArray(response.positions)) {
-      return response.positions;
+      positionsData = response;
+    } else if (response && response.data && Array.isArray(response.data)) {
+      positionsData = response.data;
     }
     
-    console.log('⚠️ No positions data found in response');
-    return [];
+    // Filter chỉ positions có volume
+    const activePositions = positionsData.filter(p => 
+      parseFloat(p.holdVol || p.volume || 0) !== 0
+    );
+    
+    console.log(`📊 Found ${activePositions.length} active positions`);
+    
+    // Update cache
+    positionsCache = activePositions;
+    positionsCacheTime = now;
+    
+    if (symbol) {
+      const formattedSymbol = symbol.replace('USDT', '_USDT');
+      return activePositions.filter(p => p.symbol === formattedSymbol);
+    }
+    
+    return activePositions;
     
   } catch (error) {
-    console.error(`❌ [POSITIONS_SDK_ERROR] ${symbol}:`, error.message);
-    
-    // Fallback: thử private API nếu SDK fail
-    try {
-      console.log('🔄 Trying private API fallback...');
-      const url = 'https://contract.mexc.com/api/v1/private/position/open_positions';
-      const params = symbol ? { symbol: symbol.replace('USDT', '_USDT') } : {};
-      
-      const res = await axiosInstance.get(url, { params });
-      if (res.data && res.data.data) {
-        return res.data.data;
-      }
-    } catch (apiError) {
-      console.error('❌ Private API fallback also failed:', apiError.message);
-    }
-    
+    console.error(`❌ [POSITIONS_SDK_ERROR]:`, error.message);
     return [];
   }
 }
@@ -455,55 +455,7 @@ let positionsCache = null;
 let positionsCacheTime = 0;
 const CACHE_DURATION = 10000; // 10 seconds
 
-async function getOpenPositions(symbol = null) {
-  try {
-    // Check cache
-    const now = Date.now();
-    if (positionsCache && (now - positionsCacheTime) < CACHE_DURATION) {
-      if (!symbol) return positionsCache;
-      
-      // Filter by symbol nếu có
-      return positionsCache.filter(p => 
-        !symbol || p.symbol === symbol.replace('USDT', '_USDT')
-      );
-    }
 
-    console.log('🔍 Fetching all positions via SDK...');
-    
-    const response = await client.getOpenPositions();
-    
-    let positionsData = [];
-    
-    // Xử lý response structure
-    if (response && Array.isArray(response)) {
-      positionsData = response;
-    } else if (response && response.data && Array.isArray(response.data)) {
-      positionsData = response.data;
-    }
-    
-    // Filter chỉ positions có volume
-    const activePositions = positionsData.filter(p => 
-      parseFloat(p.holdVol || p.volume || 0) !== 0
-    );
-    
-    console.log(`📊 Found ${activePositions.length} active positions`);
-    
-    // Update cache
-    positionsCache = activePositions;
-    positionsCacheTime = now;
-    
-    if (symbol) {
-      const formattedSymbol = symbol.replace('USDT', '_USDT');
-      return activePositions.filter(p => p.symbol === formattedSymbol);
-    }
-    
-    return activePositions;
-    
-  } catch (error) {
-    console.error(`❌ [POSITIONS_SDK_ERROR]:`, error.message);
-    return [];
-  }
-}
 // Transfer between spot and futures
 async function universalTransfer({ fromAccountType, toAccountType, asset, amount }) {
   try {
