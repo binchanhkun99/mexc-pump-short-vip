@@ -13,6 +13,7 @@ import { updatePositionWithPrice, openShortPosition } from './account.js';
 import { sendMessageWithAutoDelete, cleanupOldMessages } from './telegram.js';
 
 const trackingCoins = new Map();
+const pumpCooldown = new Map(); // Track các coin vừa pump
 
 function formatUsd(v) {
   if (Math.abs(v) >= 1) return v.toFixed(2);
@@ -26,6 +27,17 @@ function formatUsd(v) {
 async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   if (!klines || klines.length < 15) return;
 
+   // CHECK PUMP COOLDOWN: Nếu coin vừa pump trong 1h qua -> bỏ qua
+  if (pumpCooldown.has(symbol)) {
+    const pumpTime = pumpCooldown.get(symbol);
+    const cooldownMs = 10 * 60 * 1000; // 1 giờ
+    if (Date.now() - pumpTime < cooldownMs) {
+      return; // Bỏ qua coin này trong pump cooldown
+    } else {
+      pumpCooldown.delete(symbol); // Hết cooldown
+    }
+  }
+
   const currentCandle = klines.at(-1);
   const currentPrice = currentCandle.close;
   const previousCandle = klines.at(-2);
@@ -34,8 +46,10 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   const ma5 = calculateMA(klines, 5);
 
   // Cập nhật PnL / DCA / TP/SL nếu có lệnh mở
-  await updatePositionWithPrice(symbol, currentPrice, ma10);
-
+  const { positions } = await import('./account.js');
+  if (positions.has(symbol)) {
+    await updatePositionWithPrice(symbol, currentPrice, ma10);
+  }
   // ---------------- FETCH FUNDING & SPREAD FROM TICKER ----------------
   const ticker = tickers.find(t => t.symbol === symbol);
   if (!ticker) return;
@@ -70,6 +84,8 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     if (pumpThreshold < 10) pumpThreshold = 10;
 
     if (pumpPct >= pumpThreshold) {
+       // THÊM VÀO PUMP COOLDOWN (quan trọng)
+      pumpCooldown.set(symbol, Date.now());
       // CHỈ LƯU VOLUME24H, KHÔNG CHECK FILTERS KHI TRACKING
       trackingCoins.set(symbol, {
         addedAt: Date.now(),
@@ -337,12 +353,22 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
 // ======================================================================
 function cleanupOldTrackingCoins() {
   const now = Date.now();
-  const maxTrackingTime = 60 * 60 * 1000; // 1 hour
+ const maxTrackingTime = 30 * 60 * 1000; // 30 phút (tracking timeout)
+  const maxPumpCooldownTime = 20 * 60 * 1000; // 20 phút (cleanup cooldown cũ)
   
+  // Cleanup tracking cũ
   for (const [symbol, track] of trackingCoins.entries()) {
     if (now - track.addedAt > maxTrackingTime) {
       console.log(`🧹 Cleanup tracking ${symbol} (expired)`);
       trackingCoins.delete(symbol);
+    }
+  }
+  
+  // Cleanup pump cooldown cũ
+  for (const [symbol, pumpTime] of pumpCooldown.entries()) {
+    if (now - pumpTime > maxPumpCooldownTime) {
+      pumpCooldown.delete(symbol);
+      console.log(`🧹 Cleanup pump cooldown ${symbol}`);
     }
   }
 }
