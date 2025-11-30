@@ -24,6 +24,13 @@ const contractInfoCache = new Map();
 const CONTRACT_CACHE_TTL = 5 * 60 * 1000;
 
 // =============================
+// Helper functions
+// =============================
+function formatSymbol(symbol) {
+  return symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
+}
+
+// =============================
 // Load Binance symbols
 // =============================
 export async function fetchBinanceSymbols() {
@@ -149,15 +156,13 @@ export async function fetchKlinesWithRetry(symbol, retries = 3) {
 // Unified Contract Info (same logic as mexc-api.js)
 // =============================
 export async function getContractInfo(symbol) {
-  const formattedSymbol = symbol.includes('_USDT')
-    ? symbol
-    : symbol.replace('USDT', '_USDT');
-
-  const cache = contractInfoCache.get(formattedSymbol);
+  const formattedSymbol = formatSymbol(symbol);
+  const cacheKey = formattedSymbol;
   const now = Date.now();
 
-  if (cache && now - cache.timestamp < CONTRACT_CACHE_TTL) {
-    return cache.data;
+  const cached = contractInfoCache.get(cacheKey);
+  if (cached && now - cached.timestamp < CONTRACT_CACHE_TTL) {
+    return cached.data;
   }
 
   let lastError = null;
@@ -165,43 +170,43 @@ export async function getContractInfo(symbol) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const res = await axiosInstance.get(
-        'https://contract.mexc.com/api/v1/contract/detail',
-        { params: { symbol: formattedSymbol } }
+        "https://contract.mexc.com/api/v1/contract/detail",
+        {
+          params: { symbol: formattedSymbol },
+        }
       );
 
       if (!res.data || res.data.success === false || res.data.code !== 0) {
-        throw new Error(
-          `MEXC contract.detail error code=${res.data?.code}, msg=${res.data?.message}`
-        );
+        const msg =
+          res.data?.message || res.data?.msg || "Unknown contract detail error";
+        throw new Error(`MEXC contract.detail error: code=${res.data?.code}, msg=${msg}`);
       }
 
-      const c = res.data.data;
-
+      const contract = res.data.data;
       const info = {
-        volumePrecision: c.volScale ?? 0,
-        pricePrecision: c.priceScale ?? 5,
-        minQuantity: parseFloat(c.minVol ?? '1'),
-        quantityUnit: parseFloat(c.volUnit ?? '1'),
-        contractMultiplier: parseFloat(c.contractSize ?? '1'),
-        contractSize: parseFloat(c.contractSize ?? '1')
+        volumePrecision: contract.volScale ?? 0,
+        pricePrecision: contract.priceScale ?? 5,
+        minQuantity: parseFloat(contract.minVol ?? "1"),
+        quantityUnit: parseFloat(contract.volUnit ?? "1"),
+        contractMultiplier: parseFloat(contract.contractSize ?? "1"),
+        contractSize: parseFloat(contract.contractSize ?? "1"),
       };
 
-      contractInfoCache.set(formattedSymbol, { data: info, timestamp: now });
-      console.log('📄 [EXCHANGE.CONTRACT_INFO]', formattedSymbol, info);
-
+      contractInfoCache.set(cacheKey, { data: info, timestamp: now });
+      console.log("📄 [CONTRACT_INFO]", formattedSymbol, info);
       return info;
-    } catch (err) {
-      lastError = err;
+    } catch (error) {
+      lastError = error;
       console.error(
-        `❌ [EXCHANGE.CONTRACT_INFO_ERROR] ${formattedSymbol} attempt ${attempt}:`,
-        err.message
+        `❌ [CONTRACT_INFO_ERROR] ${formattedSymbol} (attempt ${attempt}):`,
+        error.message
       );
-      await new Promise(r => setTimeout(r, attempt * 300));
+      await new Promise((r) => setTimeout(r, 300 * attempt));
     }
   }
 
   throw new Error(
-    `Cannot fetch contractInfo for ${formattedSymbol}: ${lastError?.message}`
+    `Không lấy được contract info cho ${formattedSymbol}: ${lastError?.message}`
   );
 }
 
@@ -231,7 +236,9 @@ export async function getListingDays(symbol) {
       listingDaysCache.set(symbol, listingDays);
       return listingDays;
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`Failed to fetch futures kline for ${symbol}:`, err.message);
+  }
 
   // Fallback Spot
   try {
@@ -248,7 +255,9 @@ export async function getListingDays(symbol) {
       listingDaysCache.set(symbol, listingDays);
       return listingDays;
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`Failed to fetch spot kline for ${symbol}:`, err.message);
+  }
 
   // Fallback cuối
   listingDays = 365;
