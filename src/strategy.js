@@ -1,11 +1,13 @@
-// src/strategy.js
+// src/strategy.js - ĐÃ TÍCH HỢP FILTERS & API THẬT
 import { CONFIG } from './config.js';
 import { calculateMA, detectBearishPatterns } from './indicators.js';
 import {
   fetchAllTickers,
   fetchKlinesWithRetry,
   isMexcExclusive,
-  mapWithRateLimit
+  mapWithRateLimit,
+  checkTradingFilters,
+  getListingDays
 } from './exchange.js';
 import { updatePositionWithPrice, openShortPosition } from './account.js';
 import { sendMessageWithAutoDelete, cleanupOldMessages } from './telegram.js';
@@ -19,7 +21,7 @@ function formatUsd(v) {
 }
 
 // ======================================================================
-// ANALYZE FOR PUMP & SHORT REVERSAL
+// ANALYZE FOR PUMP & SHORT REVERSAL - ĐÃ THÊM FILTERS
 // ======================================================================
 async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   if (!klines || klines.length < 15) return;
@@ -41,16 +43,37 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   const bid = parseFloat(ticker.bid1 || ticker.bid || 0);
   const ask = parseFloat(ticker.ask1 || ticker.ask || 0);
   const fundingRate = parseFloat(ticker.fundingRate || 0);
+  const volume24h = parseFloat(ticker.amount24 || 0);
 
   let spreadPct = 0;
   if (bid > 0 && ask > 0) spreadPct = ((ask - bid) / bid) * 100;
 
   const fundingPctStr = (fundingRate * 100).toFixed(4);
 
-  const frLimitPos = CONFIG.FUNDING_RATE_LIMIT_POSITIVE ?? 0.015;  // +1.5%
-  const frLimitNeg = CONFIG.FUNDING_RATE_LIMIT_NEGATIVE ?? -0.015; // -1.5%
+  const frLimitPos = CONFIG.FUNDING_RATE_LIMIT_POSITIVE ?? 0.015;
+  const frLimitNeg = CONFIG.FUNDING_RATE_LIMIT_NEGATIVE ?? -0.015;
 
-  // Note: KHÔNG CHECK funding/spread ở đầu hàm nữa
+  // ======================================================================
+  // STEP 0 — CHECK TRADING FILTERS (MỚI THÊM)
+  // ======================================================================
+  const filters = await checkTradingFilters(symbol, volume24h);
+  if (!filters.volumeOk || !filters.listingOk) {
+    if (trackingCoins.has(symbol)) {
+      // Remove khỏi tracking nếu vi phạm filter
+      trackingCoins.delete(symbol);
+      console.log(`🗑️ Remove ${symbol} khỏi tracking: ${filters.reasons.join(', ')}`);
+      
+      await sendMessageWithAutoDelete(
+        `🚫 REMOVE TRACKING: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
+        `Lý do: ${filters.reasons.join(', ')}`,
+        {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true
+        }
+      );
+    }
+    return;
+  }
 
   // ======================================================================
   // STEP 1 — DETECT PUMP → TRACKING
@@ -69,18 +92,24 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     if (pumpThreshold < 10) pumpThreshold = 10;
 
     if (pumpPct >= pumpThreshold) {
+      const listingDays = await getListingDays(symbol);
+      
       trackingCoins.set(symbol, {
         addedAt: Date.now(),
         peakPrice: highestPrice,
         peakTime: currentCandle.time,
         initialPumpPct: pumpPct,
-        notifiedReversal: false
+        notifiedReversal: false,
+        volume24h: volume24h,
+        listingDays: listingDays
       });
 
       const msg =
         `🎯 *TRACKING PUMP*: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
         `Pump: +${pumpPct.toFixed(2)}%\n` +
         `Đỉnh tạm thời: $${formatUsd(highestPrice)}\n` +
+        `Volume 24h: $${(volume24h / 1000000).toFixed(1)}M\n` +
+        `Listing: ${listingDays.toFixed(1)} ngày\n` +
         `${mexcOnly ? 'CHỈ MEXC 🟢' : 'CÓ BINANCE 🟡'}\n` +
         `Spread hiện tại: ${spreadPct.toFixed(2)}%\n` +
         `Funding hiện tại: ${fundingPctStr}%\n`;
@@ -249,6 +278,9 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
       (earlyTopSignal
         ? '• Early-top: wick dài + volume dày\n'
         : '') +
+      `• Confidence: ${confidence}%\n` +
+      `• Volume 24h: $${(track.volume24h / 1000000).toFixed(1)}M\n` +
+      `• Listing: ${track.listingDays.toFixed(1)} ngày\n` +
       `• Spread: ${spreadPct.toFixed(2)}%\n` +
       `• Funding: ${fundingPctStr}%\n`;
 
@@ -260,31 +292,41 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     track.notifiedReversal = true;
 
     // ======================================================================
-    // STEP 5 — SAU TÍN HIỆU SHORT: CHECK FUNDING + SPREAD
+    // STEP 5 — SAU TÍN HIỆU SHORT: CHECK FILTERS & CONDITIONS
     // ======================================================================
+
+    // Check filters một lần nữa trước khi vào lệnh
+    const finalFilters = await checkTradingFilters(symbol, track.volume24h);
+    if (!finalFilters.volumeOk || !finalFilters.listingOk) {
+      await sendMessageWithAutoDelete(
+        `🚫 FILTER BLOCK: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
+        `Lý do: ${finalFilters.reasons.join(', ')}`,
+        {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true
+        }
+      );
+      trackingCoins.delete(symbol);
+      return;
+    }
+
     if (spreadPct >= CONFIG.MAX_SPREAD_PCT) {
       await sendMessageWithAutoDelete(
-        `⚠️ Spread ${spreadPct.toFixed(
-          2
-        )}% quá lớn → KHÔNG mở SHORT ${symbol}`
+        `⚠️ Spread ${spreadPct.toFixed(2)}% quá lớn → KHÔNG mở SHORT ${symbol}`
       );
       return;
     }
 
     if (fundingRate > frLimitPos) {
       await sendMessageWithAutoDelete(
-        `⚠️ Funding ${fundingPctStr}% > +${(
-          frLimitPos * 100
-        ).toFixed(2)}% → KHÔNG mở SHORT ${symbol}`
+        `⚠️ Funding ${fundingPctStr}% > +${(frLimitPos * 100).toFixed(2)}% → KHÔNG mở SHORT ${symbol}`
       );
       return;
     }
 
     if (fundingRate < frLimitNeg) {
       await sendMessageWithAutoDelete(
-        `⚠️ Funding ${fundingPctStr}% < ${(
-          frLimitNeg * 100
-        ).toFixed(2)}% → KHÔNG mở SHORT ${symbol}`
+        `⚠️ Funding ${fundingPctStr}% < ${(frLimitNeg * 100).toFixed(2)}% → KHÔNG mở SHORT ${symbol}`
       );
       return;
     }
@@ -293,10 +335,8 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     // STEP 6 — MỞ LỆNH SHORT
     // ======================================================================
     const reason =
-      `pump ${track.initialPumpPct.toFixed(1)}% | drop ${dropFromPeak.toFixed(
-        1
-      )}% | conf ${confidence}% | ` +
-      `FR ${fundingPctStr}% | SP ${spreadPct.toFixed(2)}%`;
+      `pump ${track.initialPumpPct.toFixed(1)}% | drop ${dropFromPeak.toFixed(1)}% | conf ${confidence}% | ` +
+      `FR ${fundingPctStr}% | SP ${spreadPct.toFixed(2)}% | Vol ${(track.volume24h / 1000000).toFixed(1)}M | List ${track.listingDays.toFixed(1)}d`;
 
     await openShortPosition(symbol, currentPrice, reason);
   }
@@ -309,28 +349,76 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     trackingDuration > 30 * 60 * 1000 ||
     dropFromPeak > 30
   ) {
+    console.log(`⏹️ Stop tracking ${symbol}: duration=${(trackingDuration/60000).toFixed(1)}min, drop=${dropFromPeak.toFixed(1)}%`);
     trackingCoins.delete(symbol);
   }
 }
 
 // ======================================================================
-// MAIN LOOP
+// CLEANUP OLD TRACKING COINS
+// ======================================================================
+function cleanupOldTrackingCoins() {
+  const now = Date.now();
+  const maxTrackingTime = 60 * 60 * 1000; // 1 hour
+  
+  for (const [symbol, track] of trackingCoins.entries()) {
+    if (now - track.addedAt > maxTrackingTime) {
+      console.log(`🧹 Cleanup tracking ${symbol} (expired)`);
+      trackingCoins.delete(symbol);
+    }
+  }
+}
+
+// ======================================================================
+// MAIN LOOP - ĐÃ THÊM CLEANUP
 // ======================================================================
 export async function checkAndAlert() {
-  const tickers = await fetchAllTickers();
-  if (!tickers?.length) return;
+  try {
+    const tickers = await fetchAllTickers();
+    if (!tickers?.length) {
+      console.log('⏳ Không lấy được tickers, bỏ qua cycle này');
+      return;
+    }
 
-  console.log(
-    `🔍 Quét ${tickers.length} coin | Tracking: ${trackingCoins.size}`
-  );
+    console.log(
+      `🔍 Quét ${tickers.length} coin | Tracking: ${trackingCoins.size}`
+    );
 
-  const symbols = tickers.map(t => t.symbol);
+    const symbols = tickers.map(t => t.symbol);
 
-  await mapWithRateLimit(symbols, async symbol => {
-    const klines = await fetchKlinesWithRetry(symbol);
-    if (klines?.length >= 15)
-      await analyzeForPumpAndReversal(symbol, klines, tickers);
-  });
+    await mapWithRateLimit(symbols, async symbol => {
+      try {
+        const klines = await fetchKlinesWithRetry(symbol);
+        if (klines?.length >= 15) {
+          await analyzeForPumpAndReversal(symbol, klines, tickers);
+        }
+      } catch (err) {
+        console.error(`❌ Lỗi analyze ${symbol}:`, err.message);
+      }
+    });
 
-  await cleanupOldMessages();
+    // Cleanup old tracking coins
+    cleanupOldTrackingCoins();
+
+    await cleanupOldMessages();
+
+  } catch (err) {
+    console.error('❌ Lỗi main loop:', err);
+  }
+}
+
+// Utility function để xem trạng thái tracking
+export function getTrackingStatus() {
+  const status = [];
+  for (const [symbol, track] of trackingCoins.entries()) {
+    status.push({
+      symbol,
+      pumpPct: track.initialPumpPct,
+      addedAt: new Date(track.addedAt).toLocaleTimeString(),
+      notified: track.notifiedReversal,
+      volume: track.volume24h,
+      listingDays: track.listingDays
+    });
+  }
+  return status;
 }

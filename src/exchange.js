@@ -1,4 +1,4 @@
-// src/exchange.js
+// src/exchange.js - ĐÃ THÊM FILTERS & LISTING DAYS
 import axios from 'axios';
 import https from 'https';
 import { CONFIG } from './config.js';
@@ -9,6 +9,10 @@ const axiosInstance = axios.create({
 });
 
 let binanceSymbols = new Set();
+
+// Cache cho listing days để tránh request nhiều
+const listingDaysCache = new Map();
+const contractInfoCache = new Map();
 
 export async function fetchBinanceSymbols() {
   try {
@@ -32,7 +36,7 @@ export function isMexcExclusive(mexcSymbol) {
 
 export async function fetchAllTickers() {
   try {
-    const res = await axios.get(
+    const res = await axiosInstance.get(
       "https://contract.mexc.com/api/v1/contract/ticker"
     );
 
@@ -55,7 +59,6 @@ export async function fetchAllTickers() {
         ask: parseFloat(t.ask1),
 
         // ----- funding rate -----
-        // decimal form (0.0007 = 0.07%)
         fundingRate: parseFloat(t.fundingRate || 0),
 
         // ----- volume -----
@@ -64,11 +67,6 @@ export async function fetchAllTickers() {
 
         fairPrice: parseFloat(t.fairPrice),
         indexPrice: parseFloat(t.indexPrice),
-
-        // optional useful fields
-        // riseFallRate: parseFloat(t.riseFallRate),
-        // riseFallValue: parseFloat(t.riseFallValue),
-        // holdVol: parseFloat(t.holdVol),
       }));
 
     // sort descending by amount24 (liquidity priority)
@@ -129,20 +127,132 @@ export async function fetchKlinesWithRetry(symbol, retries = 3) {
 }
 
 // ==========================================================
-//          ★★★ FETCH FUNDING RATE (MỚI THÊM) ★★★
+//          ★★★ GET LISTING DAYS (MỚI) ★★★
 // ==========================================================
-// API MEXC Futures:
-// GET https://contract.mexc.com/api/v1/contract/fundingRate?symbol=BTC_USDT
-// Response:
-// {
-//   "success": true,
-//   "code": 0,
-//   "data": {
-//     "symbol": "BTC_USDT",
-//     "fundingRate": "0.000123",
-//     "settleTime": 1700000000
-//   }
-// }
+export async function getListingDays(symbol) {
+  // Check cache trước
+  if (listingDaysCache.has(symbol)) {
+    return listingDaysCache.get(symbol);
+  }
+
+  try {
+    // Lấy kline từ 30 ngày trước để đảm bảo có đủ data
+    const now = Math.floor(Date.now() / 1000);
+    const start = now - 30 * 24 * 60 * 60; // 30 ngày
+    
+    const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}`;
+    const res = await axiosInstance.get(url, {
+      params: { 
+        interval: 'Min1', 
+        start, 
+        end: now 
+      }
+    });
+
+    if (!res.data?.success || !res.data.data?.time?.length) {
+      console.log(`⛔ Không lấy được kline cho ${symbol}`);
+      listingDaysCache.set(symbol, 0);
+      return 0;
+    }
+
+    const firstCandleTime = res.data.data.time[0] * 1000; // Convert to milliseconds
+    const listingDays = (Date.now() - firstCandleTime) / (1000 * 60 * 60 * 24);
+    
+    console.log(`📅 ${symbol}: Listing days = ${listingDays.toFixed(1)}`);
+    
+    // Cache kết quả
+    listingDaysCache.set(symbol, listingDays);
+    return listingDays;
+
+  } catch (err) {
+    console.warn(`⚠️ Lỗi getListingDays(${symbol}):`, err.message);
+    listingDaysCache.set(symbol, 0);
+    return 0;
+  }
+}
+
+// ==========================================================
+//          ★★★ GET CONTRACT INFO (MỚI) ★★★
+// ==========================================================
+export async function getContractInfo(symbol) {
+  // Check cache trước
+  if (contractInfoCache.has(symbol)) {
+    return contractInfoCache.get(symbol);
+  }
+
+  try {
+    const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
+    const res = await axiosInstance.get('https://contract.mexc.com/api/v1/contract/detail', {
+      params: { symbol: formattedSymbol }
+    });
+    
+    if (res.data && res.data.data) {
+      const contract = res.data.data;
+      const contractInfo = {
+        volumePrecision: contract.volScale || 0,
+        pricePrecision: contract.priceScale || 5,
+        minQuantity: contract.minVol || 1,
+        quantityUnit: contract.volUnit || 1,
+        contractMultiplier: contract.contractSize || 1,
+        contractSize: contract.contractSize || 1
+      };
+      
+      // Cache kết quả
+      contractInfoCache.set(symbol, contractInfo);
+      return contractInfo;
+    }
+  } catch (error) {
+    console.error('❌ [CONTRACT_INFO_ERROR]:', error.message);
+  }
+  
+  // Fallback values
+  const fallbackInfo = { 
+    volumePrecision: 0,
+    pricePrecision: 5,
+    minQuantity: 1,
+    quantityUnit: 1,
+    contractMultiplier: 1,
+    contractSize: 1
+  };
+  
+  contractInfoCache.set(symbol, fallbackInfo);
+  return fallbackInfo;
+}
+
+// ==========================================================
+//          ★★★ CHECK VOLUME & LISTING FILTERS ★★★
+// ==========================================================
+export async function checkTradingFilters(symbol, volume24h) {
+  const filters = {
+    volumeOk: true,
+    listingOk: true,
+    reasons: []
+  };
+
+  // Check volume - chặn nếu volume quá lớn
+  if (volume24h > CONFIG.MAX_VOLUME_USDT) {
+    filters.volumeOk = false;
+    filters.reasons.push(`Volume ${(volume24h / 1000000).toFixed(1)}M > ${CONFIG.MAX_VOLUME_USDT / 1000000}M`);
+  }
+
+  // Check listing days - chặn nếu coin quá mới
+  const listingDays = await getListingDays(symbol);
+  if (listingDays < CONFIG.MIN_LISTING_DAYS) {
+    filters.listingOk = false;
+    filters.reasons.push(`Listing ${listingDays.toFixed(1)} days < ${CONFIG.MIN_LISTING_DAYS} days`);
+  }
+
+  // Log nếu bị chặn
+  if (!filters.volumeOk || !filters.listingOk) {
+    console.log(`🚫 ${symbol} bị chặn bởi filters:`, filters.reasons.join(', '));
+  }
+
+  return filters;
+}
+
+// ==========================================================
+//          ★★★ FETCH FUNDING RATE ★★★
+// ==========================================================
 export async function fetchFundingRate(symbol) {
   try {
     const url = `https://contract.mexc.com/api/v1/contract/fundingRate`;
@@ -160,6 +270,25 @@ export async function fetchFundingRate(symbol) {
   }
 }
 
+// ==========================================================
+//          ★★★ CLEAR CACHE (cho testing) ★★★
+// ==========================================================
+export function clearCache() {
+  listingDaysCache.clear();
+  contractInfoCache.clear();
+  console.log('🧹 Đã clear cache');
+}
+
+// ==========================================================
+//          ★★★ GET CACHE STATS ★★★
+// ==========================================================
+export function getCacheStats() {
+  return {
+    listingDaysCache: listingDaysCache.size,
+    contractInfoCache: contractInfoCache.size
+  };
+}
+
 export async function mapWithRateLimit(items, fn) {
   const results = [];
   let queue = 0;
@@ -173,7 +302,12 @@ export async function mapWithRateLimit(items, fn) {
     const diff = now - lastTime;
     if (diff < interval) await new Promise(r => setTimeout(r, interval - diff));
     lastTime = Date.now();
-    results[i] = await fn(items[i]);
+    try {
+      results[i] = await fn(items[i]);
+    } catch (err) {
+      console.error(`❌ Lỗi xử lý ${items[i]}:`, err.message);
+      results[i] = null;
+    }
     if (queue < items.length) await runNext();
   }
 

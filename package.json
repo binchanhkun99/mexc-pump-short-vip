@@ -22,6 +22,7 @@
     "ccxt": "^4.5.11",
     "dotenv": "^16.4.5",
     "https-proxy-agent": "^7.0.6",
+    "mexc-futures-sdk": "^1.5.1",
     "node-fetch": "^3.3.2",
     "node-telegram-bot-api": "^0.66.0"
   },
