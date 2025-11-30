@@ -406,24 +406,19 @@ async function closePosition(symbol, quantity, side = 'SHORT') {
 // Get position details
 async function getPosition(symbol) {
   try {
+    // ĐẦU TIÊN: Lấy tất cả positions một lần
+    const allPositions = await getOpenPositions();
+    
+    // Tìm position cho symbol cụ thể
     const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
-    const positions = await getOpenPositions(formattedSymbol);
     
-    console.log(`🔍 Looking for position: ${formattedSymbol}, found ${positions.length} positions`);
-    
-    const position = positions.find(p => {
+    const position = allPositions.find(p => {
       const hasPosition = parseFloat(p.holdVol || p.volume || 0) !== 0;
       const symbolMatch = p.symbol === formattedSymbol;
-      
-      if (hasPosition && symbolMatch) {
-        console.log(`✅ Found active position:`, p);
-        return true;
-      }
-      return false;
+      return hasPosition && symbolMatch;
     });
     
     if (!position) {
-      console.log(`❌ No active position found for ${formattedSymbol}`);
       return null;
     }
 
@@ -432,13 +427,12 @@ async function getPosition(symbol) {
     const qty = Math.abs(parseFloat(position.holdVol || position.volume || 0));
     const pnl = parseFloat(position.unrealised || position.unrealizedPnl || 0);
     
-    // Calculate ROI for short position
     let roi = 0;
     if (entryPrice > 0) {
       roi = ((entryPrice - price) / entryPrice) * LEVERAGE * 100;
     }
 
-    const positionData = {
+    return {
       symbol,
       side: position.positionType === 2 ? 'SHORT' : 'LONG',
       entryPrice,
@@ -450,15 +444,66 @@ async function getPosition(symbol) {
       notional: qty * price,
     };
 
-    console.log(`📊 Position data for ${symbol}:`, positionData);
-    return positionData;
-
   } catch (err) {
     console.error(`❌ [GET_POSITION_ERROR] ${symbol}:`, err.message);
     return null;
   }
 }
 
+// Get all open positions - CACHE KẾT QUẢ
+let positionsCache = null;
+let positionsCacheTime = 0;
+const CACHE_DURATION = 10000; // 10 seconds
+
+async function getOpenPositions(symbol = null) {
+  try {
+    // Check cache
+    const now = Date.now();
+    if (positionsCache && (now - positionsCacheTime) < CACHE_DURATION) {
+      if (!symbol) return positionsCache;
+      
+      // Filter by symbol nếu có
+      return positionsCache.filter(p => 
+        !symbol || p.symbol === symbol.replace('USDT', '_USDT')
+      );
+    }
+
+    console.log('🔍 Fetching all positions via SDK...');
+    
+    const response = await client.getOpenPositions();
+    
+    let positionsData = [];
+    
+    // Xử lý response structure
+    if (response && Array.isArray(response)) {
+      positionsData = response;
+    } else if (response && response.data && Array.isArray(response.data)) {
+      positionsData = response.data;
+    }
+    
+    // Filter chỉ positions có volume
+    const activePositions = positionsData.filter(p => 
+      parseFloat(p.holdVol || p.volume || 0) !== 0
+    );
+    
+    console.log(`📊 Found ${activePositions.length} active positions`);
+    
+    // Update cache
+    positionsCache = activePositions;
+    positionsCacheTime = now;
+    
+    if (symbol) {
+      const formattedSymbol = symbol.replace('USDT', '_USDT');
+      return activePositions.filter(p => p.symbol === formattedSymbol);
+    }
+    
+    return activePositions;
+    
+  } catch (error) {
+    console.error(`❌ [POSITIONS_SDK_ERROR]:`, error.message);
+    return [];
+  }
+}
 // Transfer between spot and futures
 async function universalTransfer({ fromAccountType, toAccountType, asset, amount }) {
   try {

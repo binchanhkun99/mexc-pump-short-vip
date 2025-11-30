@@ -105,21 +105,32 @@ async function syncPositionFromAPI(symbol) {
 // =========================================================
 //            UPDATE POSITION — API THẬT
 // =========================================================
+async function checkPositionExists(symbol) {
+  try {
+    const apiPos = await apiGetPosition(symbol);
+    return apiPos !== null;
+  } catch (error) {
+    console.error(`❌ Lỗi check position ${symbol}:`, error);
+    return false;
+  }
+}
+
+
+
 export async function updatePositionWithPrice(symbol, price, ma10) {
   // Sync position thực tế từ API
+    const pos = positions.get(symbol);
+  if (!pos) return;
+  
   const apiPos = await syncPositionFromAPI(symbol);
-  if (!apiPos) {
-    // Position đã đóng trên API nhưng vẫn trong memory -> xóa
-    if (positions.has(symbol)) {
-      const removedPos = positions.get(symbol);
-      console.log(`🗑️ Position ${symbol} đã đóng trên API, xóa khỏi memory`);
-      positions.delete(symbol);
-    }
+ if (!apiPos) {
+    // Position đã đóng trên API -> xóa khỏi memory
+    console.log(`🗑️ Position ${symbol} đã đóng trên API, xóa khỏi memory`);
+    positions.delete(symbol);
+    recomputeEquity();
     return;
   }
 
-  // Cập nhật từ API data
-  let pos = positions.get(symbol);
   if (!pos) {
     // Position mới từ API (có thể đã mở từ trước)
     positions.set(symbol, apiPos);
