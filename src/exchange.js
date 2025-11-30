@@ -1,18 +1,20 @@
-// src/exchange.js - Fully fixed version
-// - Unified contractInfo handling
-// - Proper retry logic
-// - No incorrect fallbacks
-// - Shared with mexc-api.js contract parsing rules
-// - Stable caching and error isolation.
+// src/exchange.js - Optimized version
+// - Tracking nhiều coin như code mới
+// - Vẫn filter volume như code cũ 
+// - Fix lỗi 403 với rate limiting mạnh
 
 import axios from 'axios';
 import https from 'https';
 import { CONFIG } from './config.js';
 
-// Axios instance
+// Axios instance với rate limiting mạnh
 const axiosInstance = axios.create({
   timeout: CONFIG.AXIOS_TIMEOUT,
-  httpsAgent: new https.Agent({ keepAlive: true })
+  httpsAgent: new https.Agent({ keepAlive: true }),
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json',
+  }
 });
 
 // Binance symbol set
@@ -23,6 +25,10 @@ const listingDaysCache = new Map();
 const contractInfoCache = new Map();
 const CONTRACT_CACHE_TTL = 5 * 60 * 1000;
 
+// Rate limiting control
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 100; // ms between requests
+
 // =============================
 // Helper functions
 // =============================
@@ -30,11 +36,22 @@ function formatSymbol(symbol) {
   return symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
 }
 
+// Rate limiter
+async function rateLimit() {
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    await new Promise(r => setTimeout(r, MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+  }
+  lastRequestTime = Date.now();
+}
+
 // =============================
 // Load Binance symbols
 // =============================
 export async function fetchBinanceSymbols() {
   try {
+    await rateLimit();
     const resp = await axiosInstance.get(
       'https://api.binance.com/api/v3/exchangeInfo'
     );
@@ -58,10 +75,11 @@ export function isMexcExclusive(mexcSymbol) {
 }
 
 // =============================
-// Fetch all tickers
+// Fetch all tickers - CÓ FILTER VOLUME
 // =============================
 export async function fetchAllTickers() {
   try {
+    await rateLimit();
     const res = await axiosInstance.get(
       'https://contract.mexc.com/api/v1/contract/ticker'
     );
@@ -70,8 +88,13 @@ export async function fetchAllTickers() {
 
     const raw = res.data.data;
 
+    // 🎯 QUAN TRỌNG: FILTER VOLUME như code cũ
     const filtered = raw
-      .filter(t => t.symbol?.endsWith('_USDT'))
+      .filter(t => 
+        t.symbol?.endsWith('_USDT') &&
+        parseFloat(t.amount24) >= CONFIG.MIN_VOLUME_USDT &&  // ✅ FILTER MIN VOLUME
+        parseFloat(t.amount24) <= CONFIG.MAX_VOLUME_USDT     // ✅ FILTER MAX VOLUME
+      )
       .map(t => ({
         symbol: t.symbol,
         lastPrice: parseFloat(t.lastPrice),
@@ -83,8 +106,10 @@ export async function fetchAllTickers() {
         fairPrice: parseFloat(t.fairPrice),
         indexPrice: parseFloat(t.indexPrice)
       }))
-      .filter(t => !isNaN(t.lastPrice));
+      .filter(t => !isNaN(t.lastPrice) && t.amount24 > 0);
 
+    console.log(`📊 Found ${filtered.length} coins after volume filtering`);
+    
     return filtered.sort((a, b) => b.amount24 - a.amount24);
   } catch (err) {
     console.error('fetchAllTickers error:', err.message);
@@ -93,29 +118,35 @@ export async function fetchAllTickers() {
 }
 
 // =============================
-// Retry wrapper
+// Retry wrapper với rate limiting
 // =============================
 async function fetchRetry(url, params = {}, retry = 3) {
   for (let i = 1; i <= retry; i++) {
     try {
+      await rateLimit();
       return await axiosInstance.get(url, { params });
     } catch (err) {
       console.log(`⚠️ Retry ${i}/${retry} for ${url}:`, err.message);
-      await new Promise(r => setTimeout(r, i * 500));
+      await new Promise(r => setTimeout(r, i * 800));
     }
   }
   throw new Error(`API failed after retries: ${url}`);
 }
 
 // =============================
-// KLINE fetch
+// KLINE fetch với rate limiting mạnh
 // =============================
 export async function fetchKlinesWithRetry(symbol, retries = 3) {
+  // 🎯 THÊM DELAY để tránh 403
+  await new Promise(r => setTimeout(r, 150 + Math.random() * 100));
+  
   const now = Math.floor(Date.now() / 1000);
   const start = now - CONFIG.KLINE_LIMIT * 60;
 
   for (let i = 0; i < retries; i++) {
     try {
+      await rateLimit();
+      
       const res = await axiosInstance.get(
         `https://contract.mexc.com/api/v1/contract/kline/${symbol}`,
         {
@@ -140,10 +171,17 @@ export async function fetchKlinesWithRetry(symbol, retries = 3) {
         return klines.sort((a, b) => a.time - b.time);
       }
     } catch (err) {
-      if (err.response?.status === 429) {
-        await new Promise(r => setTimeout(r, 300));
+      if (err.response?.status === 403) {
+        console.log(`🔒 Rate limited for ${symbol}, waiting longer...`);
+        await new Promise(r => setTimeout(r, 3000)); // Đợi lâu hơn nếu bị 403
         continue;
       }
+      if (err.response?.status === 429) {
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      if (err.response?.status === 400) return [];
+      
       console.error(`fetchKlines error: ${symbol}`, err.message);
       return [];
     }
@@ -153,7 +191,7 @@ export async function fetchKlinesWithRetry(symbol, retries = 3) {
 }
 
 // =============================
-// Unified Contract Info (same logic as mexc-api.js)
+// Unified Contract Info 
 // =============================
 export async function getContractInfo(symbol) {
   const formattedSymbol = formatSymbol(symbol);
@@ -169,6 +207,8 @@ export async function getContractInfo(symbol) {
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      await rateLimit();
+      
       const res = await axiosInstance.get(
         "https://contract.mexc.com/api/v1/contract/detail",
         {
@@ -275,6 +315,7 @@ export async function checkTradingFilters(symbol, volume24h) {
     reasons: []
   };
 
+  // Volume đã được filter từ fetchAllTickers, nhưng check thêm
   if (volume24h > CONFIG.MAX_VOLUME_USDT) {
     filters.volumeOk = false;
     filters.reasons.push(
@@ -298,6 +339,8 @@ export async function checkTradingFilters(symbol, volume24h) {
 // =============================
 export async function fetchFundingRate(symbol) {
   try {
+    await rateLimit();
+    
     const res = await axiosInstance.get(
       'https://contract.mexc.com/api/v1/contract/fundingRate',
       { params: { symbol } }
@@ -333,12 +376,12 @@ export function getCacheStats() {
 }
 
 // =============================
-// Rate-limited mapping
+// Rate-limited mapping với concurrent thấp hơn
 // =============================
 export async function mapWithRateLimit(items, fn) {
   const results = [];
   let idx = 0;
-  const interval = 1000 / CONFIG.MAX_REQUESTS_PER_SECOND;
+  const interval = 1000 / 3; // CHỈ 3 requests/second để tránh 403
   let lastTime = 0;
 
   async function runner() {
@@ -358,7 +401,7 @@ export async function mapWithRateLimit(items, fn) {
     }
   }
 
-  const concurrency = Math.min(CONFIG.MAX_CONCURRENT_REQUESTS, items.length);
+  const concurrency = Math.min(2, CONFIG.MAX_CONCURRENT_REQUESTS); // GIẢM concurrent
   const workers = Array.from({ length: concurrency }, runner);
   await Promise.all(workers);
   return results;
