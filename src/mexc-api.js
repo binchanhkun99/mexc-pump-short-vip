@@ -206,63 +206,46 @@ export async function getContractInfo(symbol) {
   );
 }
 
-// Round volume - quantity hiện tại đang tính theo "coin", không phải contracts.
-// Để tránh thay đổi logic hàng loạt, chỉ đảm bảo không bị làm tròn về 0 sai.
 export function roundVolume(
-  quantity,
-  precision,
-  quantityUnit = 1,
-  contractMultiplier = 1
+  contracts,       // input = số CONTRACTS
+  precision,       // volPrecision từ API
+  quantityUnit = 1 // volUnit từ API
 ) {
   console.log(
-    `🔧 Rounding volume: ${quantity}, precision: ${precision}, unit: ${quantityUnit}, multiplier: ${contractMultiplier}`
+    `🔧 Rounding contracts: ${contracts}, precision: ${precision}, unit: ${quantityUnit}`
   );
 
-  if (!isFinite(quantity) || quantity <= 0) {
-    console.log("   ❌ Invalid quantity, return 0");
+  if (!isFinite(contracts) || contracts <= 0) {
+    console.log("   ❌ Invalid contracts → return 0");
     return 0;
   }
 
-  const safeMultiplier = contractMultiplier > 0 ? contractMultiplier : 1;
-
-  // quantity đang là "số coin". Đổi sang số contracts (nếu multiplier != 1)
-  const contracts = quantity / safeMultiplier;
-
-  console.log(`   Raw contracts: ${contracts}`);
-
-  let roundedContracts;
+  let rounded;
 
   if (precision === 0) {
-    // Làm tròn integer
-    roundedContracts = Math.round(contracts);
+    rounded = Math.round(contracts);   // 14.28 → 14
   } else {
     const factor = Math.pow(10, precision);
-    roundedContracts = Math.round(contracts * factor) / factor;
+    rounded = Math.round(contracts * factor) / factor;
   }
 
-  // Đảm bảo multiple của quantityUnit
-  const unit = quantityUnit || 1;
-  let finalContracts = roundedContracts;
-
-  if (unit !== 1) {
-    finalContracts = Math.floor(finalContracts / unit) * unit;
+  // áp dụng unit
+  if (quantityUnit !== 1) {
+    rounded = Math.floor(rounded / quantityUnit) * quantityUnit;
   }
 
-  if (finalContracts <= 0) {
-    // Nếu sau khi làm tròn mà = 0, cố gắng đẩy lên min 1 * unit
-    finalContracts = unit;
+  // min contracts
+  if (rounded < quantityUnit) {
+    rounded = quantityUnit;
   }
 
-  const finalQuantity = finalContracts * safeMultiplier;
-
-  console.log(
-    `   Rounded contracts: ${roundedContracts} → Final contracts: ${finalContracts} → Final quantity: ${finalQuantity}`
-  );
-
-  return finalQuantity;
+  console.log(`   Rounded = ${rounded} CONTRACTS`);
+  return rounded; // ✔ trả về CONTRACTS
 }
 
+
 // Tính position size (đang dùng theo logic cũ: quantity theo coin)
+// 🎯 Tính CONTRACTS trực tiếp, KHÔNG qua coins
 export function calculatePositionSize(
   balance,
   price,
@@ -274,17 +257,21 @@ export function calculatePositionSize(
 
   const margin = balance * positionPercent * confidence;
   const notional = margin * LEVERAGE;
-  const contracts = notional / price;
-  const coins = contracts / (contractInfo?.contractMultiplier || 1);
 
-  const quantity = roundVolume(
-    coins,
+  const size = contractInfo.contractSize || 1;
+
+  // rawContracts ~ 14.28 chẳng hạn
+  const rawContracts = notional / (price * size);
+
+  const contracts = roundVolume(
+    rawContracts,
     contractInfo.volumePrecision,
-    contractInfo.quantityUnit,
-    contractInfo.contractMultiplier
+    contractInfo.quantityUnit
   );
-  return quantity;
+
+  return contracts; // TRẢ VỀ CONTRACTS
 }
+
 
 // =========================================================
 //                  OPEN / CLOSE POSITION
