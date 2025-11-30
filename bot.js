@@ -11,6 +11,7 @@ import {
 
 } from './src/account.js';
 import { getCacheStats, clearCache } from './src/exchange.js';
+import { cleanupOldLogs } from './src/logger.js';
 
 // Biến theo dõi trạng thái bot
 let isRunning = false;
@@ -106,6 +107,8 @@ async function gracefulShutdown() {
 // Khởi tạo và chạy bot
 async function initializeBot() {
   try {
+        cleanupOldLogs(7); // Xóa logs > 7 ngày
+
     console.log('🔄 Đang khởi tạo bot...');
     
     // 1. Khởi tạo account và sync positions
