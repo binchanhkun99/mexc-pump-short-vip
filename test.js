@@ -23,7 +23,7 @@ export const axiosInstance = axios.create({
 });
 
 // ===== CONFIG =====
-const FUTURES_SYMBOL = "BEST_USDT";      // đổi coin tại đây
+const FUTURES_SYMBOL = "BTC_USDT";      // đổi coin tại đây
 const SPOT_SYMBOL    = FUTURES_SYMBOL.replace("_USDT", "USDT");
 
 // ===============================

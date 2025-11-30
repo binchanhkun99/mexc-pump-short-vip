@@ -1,11 +1,14 @@
-// src/exchange.js - ĐÃ THÊM FILTERS & LISTING DAYS
+// src/exchange.js - ĐÃ SỬA THEO LOGIC CHECK FILTERS SAU TÍN HIỆU
 import axios from 'axios';
 import https from 'https';
 import { CONFIG } from './config.js';
 
+// Axios instance KHÔNG proxy
 const axiosInstance = axios.create({
   timeout: CONFIG.AXIOS_TIMEOUT,
-  httpsAgent: new https.Agent({ keepAlive: true }),
+  httpsAgent: new https.Agent({ 
+    keepAlive: true,
+  }),
 });
 
 let binanceSymbols = new Set();
@@ -127,7 +130,23 @@ export async function fetchKlinesWithRetry(symbol, retries = 3) {
 }
 
 // ==========================================================
-//          ★★★ GET LISTING DAYS (MỚI) ★★★
+//          ★★★ RETRY WRAPPER ★★★
+// ==========================================================
+async function fetchRetry(url, params = {}, retry = 3) {
+  for (let i = 1; i <= retry; i++) {
+    try {
+      const response = await axiosInstance.get(url, { params, timeout: 15000 });
+      return response;
+    } catch (err) {
+      console.log(`⚠️ Retry ${i}/${retry} for ${url}: ${err.message}`);
+      await new Promise(r => setTimeout(r, i * 800));
+    }
+  }
+  throw new Error(`API failed after ${retry} retries: ${url}`);
+}
+
+// ==========================================================
+//          ★★★ GET LISTING DAYS (METHOD MỚI) ★★★
 // ==========================================================
 export async function getListingDays(symbol) {
   // Check cache trước
@@ -136,43 +155,75 @@ export async function getListingDays(symbol) {
   }
 
   try {
-    // Lấy kline từ 30 ngày trước để đảm bảo có đủ data
-    const now = Math.floor(Date.now() / 1000);
-    const start = now - 30 * 24 * 60 * 60; // 30 ngày
-    
-    const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}`;
-    const res = await axiosInstance.get(url, {
-      params: { 
-        interval: 'Min1', 
-        start, 
-        end: now 
-      }
-    });
+    const now = Date.now();
+    let listingDays = 0;
+    let source = "unknown";
 
-    if (!res.data?.success || !res.data.data?.time?.length) {
-      console.log(`⛔ Không lấy được kline cho ${symbol}`);
-      listingDaysCache.set(symbol, 0);
-      return 0;
+    // 1) FUTURES KLINE (Day1) - METHOD CHÍNH
+    try {
+      const res = await fetchRetry(
+        `https://contract.mexc.com/api/v1/contract/kline/${symbol}`,
+        {
+          interval: "Day1",
+          start: Math.floor((now - 86400000 * 200) / 1000), // 200 ngày
+          end: Math.floor(now / 1000),
+        }
+      );
+
+      if (res.data?.success && res.data.data?.time?.length > 0) {
+        const firstTime = res.data.data.time[0] * 1000;
+        listingDays = (now - firstTime) / (1000 * 60 * 60 * 24);
+        source = "futures";
+        console.log(`📅 ${symbol}: ${listingDays.toFixed(1)} days (from futures)`);
+      }
+    } catch (err) {
+      console.log(`⚠️ Futures Day1 error for ${symbol}:`, err.message);
     }
 
-    const firstCandleTime = res.data.data.time[0] * 1000; // Convert to milliseconds
-    const listingDays = (Date.now() - firstCandleTime) / (1000 * 60 * 60 * 24);
-    
-    console.log(`📅 ${symbol}: Listing days = ${listingDays.toFixed(1)}`);
-    
+    // 2) SPOT KLINE fallback - nếu futures fail
+    if (listingDays === 0) {
+      try {
+        const spotSymbol = symbol.replace("_USDT", "USDT");
+        const resSpot = await fetchRetry(
+          "https://api.mexc.com/api/v3/klines",
+          {
+            symbol: spotSymbol,
+            interval: "1d",
+            limit: 500,
+          }
+        );
+
+        if (resSpot.data?.length > 0) {
+          const firstTime = resSpot.data[0][0];
+          listingDays = (now - firstTime) / (1000 * 60 * 60 * 24);
+          source = "spot";
+          console.log(`📅 ${symbol}: ${listingDays.toFixed(1)} days (from spot)`);
+        }
+      } catch (err) {
+        console.log(`⚠️ Spot kline fallback error for ${symbol}:`, err.message);
+      }
+    }
+
+    // 3) Fallback cuối cùng - nếu tất cả fail
+    if (listingDays === 0) {
+      listingDays = 365; // Mặc định 1 năm
+      source = "fallback";
+      console.log(`📅 ${symbol}: ${listingDays} days (fallback)`);
+    }
+
     // Cache kết quả
     listingDaysCache.set(symbol, listingDays);
     return listingDays;
 
   } catch (err) {
-    console.warn(`⚠️ Lỗi getListingDays(${symbol}):`, err.message);
-    listingDaysCache.set(symbol, 0);
-    return 0;
+    console.error(`❌ Lỗi getListingDays(${symbol}):`, err.message);
+    listingDaysCache.set(symbol, 365); // Fallback
+    return 365;
   }
 }
 
 // ==========================================================
-//          ★★★ GET CONTRACT INFO (MỚI) ★★★
+//          ★★★ GET CONTRACT INFO ★★★
 // ==========================================================
 export async function getContractInfo(symbol) {
   // Check cache trước
@@ -242,11 +293,6 @@ export async function checkTradingFilters(symbol, volume24h) {
     filters.reasons.push(`Listing ${listingDays.toFixed(1)} days < ${CONFIG.MIN_LISTING_DAYS} days`);
   }
 
-  // Log nếu bị chặn
-  if (!filters.volumeOk || !filters.listingOk) {
-    console.log(`🚫 ${symbol} bị chặn bởi filters:`, filters.reasons.join(', '));
-  }
-
   return filters;
 }
 
@@ -271,7 +317,7 @@ export async function fetchFundingRate(symbol) {
 }
 
 // ==========================================================
-//          ★★★ CLEAR CACHE (cho testing) ★★★
+//          ★★★ CLEAR CACHE ★★★
 // ==========================================================
 export function clearCache() {
   listingDaysCache.clear();
@@ -289,6 +335,9 @@ export function getCacheStats() {
   };
 }
 
+// ==========================================================
+//          ★★★ RATE LIMIT MAPPING ★★★
+// ==========================================================
 export async function mapWithRateLimit(items, fn) {
   const results = [];
   let queue = 0;

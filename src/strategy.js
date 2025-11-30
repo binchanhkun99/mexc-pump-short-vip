@@ -1,4 +1,4 @@
-// src/strategy.js - ĐÃ TÍCH HỢP FILTERS & API THẬT
+// src/strategy.js - ĐÃ SỬA THEO LOGIC CHECK FILTERS SAU TÍN HIỆU
 import { CONFIG } from './config.js';
 import { calculateMA, detectBearishPatterns } from './indicators.js';
 import {
@@ -21,7 +21,7 @@ function formatUsd(v) {
 }
 
 // ======================================================================
-// ANALYZE FOR PUMP & SHORT REVERSAL - ĐÃ THÊM FILTERS
+// ANALYZE FOR PUMP & SHORT REVERSAL - FILTERS CHECK SAU TÍN HIỆU
 // ======================================================================
 async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   if (!klines || klines.length < 15) return;
@@ -54,29 +54,7 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   const frLimitNeg = CONFIG.FUNDING_RATE_LIMIT_NEGATIVE ?? -0.015;
 
   // ======================================================================
-  // STEP 0 — CHECK TRADING FILTERS (MỚI THÊM)
-  // ======================================================================
-  const filters = await checkTradingFilters(symbol, volume24h);
-  if (!filters.volumeOk || !filters.listingOk) {
-    if (trackingCoins.has(symbol)) {
-      // Remove khỏi tracking nếu vi phạm filter
-      trackingCoins.delete(symbol);
-      console.log(`🗑️ Remove ${symbol} khỏi tracking: ${filters.reasons.join(', ')}`);
-      
-      await sendMessageWithAutoDelete(
-        `🚫 REMOVE TRACKING: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
-        `Lý do: ${filters.reasons.join(', ')}`,
-        {
-          parse_mode: 'Markdown',
-          disable_web_page_preview: true
-        }
-      );
-    }
-    return;
-  }
-
-  // ======================================================================
-  // STEP 1 — DETECT PUMP → TRACKING
+  // STEP 1 — DETECT PUMP → TRACKING (KHÔNG CHECK FILTERS Ở ĐÂY)
   // ======================================================================
   const last10 = klines.slice(-10);
   const firstPrice = last10[0].open;
@@ -92,16 +70,14 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     if (pumpThreshold < 10) pumpThreshold = 10;
 
     if (pumpPct >= pumpThreshold) {
-      const listingDays = await getListingDays(symbol);
-      
+      // CHỈ LƯU VOLUME24H, KHÔNG CHECK FILTERS KHI TRACKING
       trackingCoins.set(symbol, {
         addedAt: Date.now(),
         peakPrice: highestPrice,
         peakTime: currentCandle.time,
         initialPumpPct: pumpPct,
         notifiedReversal: false,
-        volume24h: volume24h,
-        listingDays: listingDays
+        volume24h: volume24h // Lưu volume để sau này check
       });
 
       const msg =
@@ -109,7 +85,6 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
         `Pump: +${pumpPct.toFixed(2)}%\n` +
         `Đỉnh tạm thời: $${formatUsd(highestPrice)}\n` +
         `Volume 24h: $${(volume24h / 1000000).toFixed(1)}M\n` +
-        `Listing: ${listingDays.toFixed(1)} ngày\n` +
         `${mexcOnly ? 'CHỈ MEXC 🟢' : 'CÓ BINANCE 🟡'}\n` +
         `Spread hiện tại: ${spreadPct.toFixed(2)}%\n` +
         `Funding hiện tại: ${fundingPctStr}%\n`;
@@ -240,7 +215,7 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     if (confidence < minConf) return;
 
     // ======================================================================
-    // STEP 4 — GỬI TÍN HIỆU SHORT
+    // STEP 4 — GỬI TÍN HIỆU SHORT (VẪN CHƯA CHECK FILTERS)
     // ======================================================================
     const target1Pct = dropFromPeak * 1.3;
     const target2Pct = dropFromPeak * 1.8;
@@ -280,7 +255,6 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
         : '') +
       `• Confidence: ${confidence}%\n` +
       `• Volume 24h: $${(track.volume24h / 1000000).toFixed(1)}M\n` +
-      `• Listing: ${track.listingDays.toFixed(1)} ngày\n` +
       `• Spread: ${spreadPct.toFixed(2)}%\n` +
       `• Funding: ${fundingPctStr}%\n`;
 
@@ -292,15 +266,15 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     track.notifiedReversal = true;
 
     // ======================================================================
-    // STEP 5 — SAU TÍN HIỆU SHORT: CHECK FILTERS & CONDITIONS
+    // STEP 5 — SAU TÍN HIỆU SHORT: CHECK FILTERS & CONDITIONS (CHECK Ở ĐÂY)
     // ======================================================================
 
-    // Check filters một lần nữa trước khi vào lệnh
-    const finalFilters = await checkTradingFilters(symbol, track.volume24h);
-    if (!finalFilters.volumeOk || !finalFilters.listingOk) {
+    // CHECK VOLUME & LISTING DAYS FILTERS (GIỐNG NHƯ FUNDING/SPREAD)
+    const filters = await checkTradingFilters(symbol, track.volume24h);
+    if (!filters.volumeOk || !filters.listingOk) {
       await sendMessageWithAutoDelete(
         `🚫 FILTER BLOCK: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
-        `Lý do: ${finalFilters.reasons.join(', ')}`,
+        `Lý do: ${filters.reasons.join(', ')}`,
         {
           parse_mode: 'Markdown',
           disable_web_page_preview: true
@@ -332,13 +306,17 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     }
 
     // ======================================================================
-    // STEP 6 — MỞ LỆNH SHORT
+    // STEP 6 — MỞ LỆNH SHORT (TẤT CẢ FILTERS ĐÃ PASS)
     // ======================================================================
+    const listingDays = await getListingDays(symbol);
     const reason =
       `pump ${track.initialPumpPct.toFixed(1)}% | drop ${dropFromPeak.toFixed(1)}% | conf ${confidence}% | ` +
-      `FR ${fundingPctStr}% | SP ${spreadPct.toFixed(2)}% | Vol ${(track.volume24h / 1000000).toFixed(1)}M | List ${track.listingDays.toFixed(1)}d`;
+      `FR ${fundingPctStr}% | SP ${spreadPct.toFixed(2)}% | Vol ${(track.volume24h / 1000000).toFixed(1)}M | List ${listingDays.toFixed(1)}d`;
 
     await openShortPosition(symbol, currentPrice, reason);
+    
+    // Xóa khỏi tracking sau khi vào lệnh thành công
+    trackingCoins.delete(symbol);
   }
 
   // ======================================================================
@@ -416,9 +394,16 @@ export function getTrackingStatus() {
       pumpPct: track.initialPumpPct,
       addedAt: new Date(track.addedAt).toLocaleTimeString(),
       notified: track.notifiedReversal,
-      volume: track.volume24h,
-      listingDays: track.listingDays
+      volume: track.volume24h
     });
   }
   return status;
+}
+
+// Manual cleanup function (cho testing)
+export function cleanupAllTracking() {
+  const count = trackingCoins.size;
+  trackingCoins.clear();
+  console.log(`🧹 Đã xóa ${count} coins khỏi tracking`);
+  return count;
 }
