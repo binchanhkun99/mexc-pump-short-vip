@@ -9,6 +9,8 @@ import {
   checkTradingFilters,
   getListingDays
 } from './exchange.js';
+import { logTrade, logDebug } from './logger.js';
+
 import { updatePositionWithPrice, openShortPosition } from './account.js';
 import { sendMessageWithAutoDelete, cleanupOldMessages } from './telegram.js';
 
@@ -227,9 +229,22 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     const minConf = aggressivePump
       ? (mexcOnly ? 45 : 50)
       : 65;
-
-    if (confidence < minConf) return;
-
+// THÊM VÀO FILE LOG
+logDebug(`Confidence analysis for ${symbol}`, {
+  confidence: confidence,
+  required: minConf,
+  reasons: confidenceReasons,
+  pumpPct: track.initialPumpPct,
+  dropFromPeak: dropFromPeak
+});
+if (confidence < minConf) {
+  logDebug(`Confidence too low for ${symbol}`, {
+    confidence: confidence,
+    required: minConf,
+    difference: minConf - confidence
+  });
+  return;
+}
     // ======================================================================
     // STEP 4 — GỬI TÍN HIỆU SHORT (VẪN CHƯA CHECK FILTERS)
     // ======================================================================

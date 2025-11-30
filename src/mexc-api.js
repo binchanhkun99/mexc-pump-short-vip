@@ -493,9 +493,11 @@ async function universalTransfer({ fromAccountType, toAccountType, asset, amount
 }
 
 // Check and transfer balance if low
-async function checkAndTransferBalance(minBalance = 10) {
+async function checkAndTransferBalance(minBalance = 40) {
   const futuresBalance = await getFuturesBalance();
   if (futuresBalance > minBalance) return true;
+  if (spotBalance < 10) return true;
+
 
   // Get spot balance
   try {
