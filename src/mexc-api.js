@@ -298,24 +298,44 @@ async function getOpenPositions(symbol = null) {
       formattedSymbol = symbol.replace('USDT', '_USDT');
     }
 
-    // Try SDK first
+    console.log(`🔍 Fetching positions via SDK: ${formattedSymbol || 'ALL'}`);
+    
+    // DÙNG SDK METHOD
     const response = await client.getOpenPositions(formattedSymbol);
     
+    console.log('📊 Positions SDK response:', JSON.stringify(response, null, 2));
+    
+    // Xử lý response structure khác nhau
     if (response && Array.isArray(response)) {
       return response;
     }
     if (response && response.data && Array.isArray(response.data)) {
       return response.data;
     }
+    if (response && response.positions && Array.isArray(response.positions)) {
+      return response.positions;
+    }
     
-    // Fallback to private API
-    const res = await axiosInstance.get('/private/position/open_positions', { 
-      params: { symbol: formattedSymbol } 
-    });
-    return res.data.data || res.data || [];
+    console.log('⚠️ No positions data found in response');
+    return [];
     
   } catch (error) {
-    console.error(`❌ [POSITIONS_ERROR]:`, error.message);
+    console.error(`❌ [POSITIONS_SDK_ERROR] ${symbol}:`, error.message);
+    
+    // Fallback: thử private API nếu SDK fail
+    try {
+      console.log('🔄 Trying private API fallback...');
+      const url = 'https://contract.mexc.com/api/v1/private/position/open_positions';
+      const params = symbol ? { symbol: symbol.replace('USDT', '_USDT') } : {};
+      
+      const res = await axiosInstance.get(url, { params });
+      if (res.data && res.data.data) {
+        return res.data.data;
+      }
+    } catch (apiError) {
+      console.error('❌ Private API fallback also failed:', apiError.message);
+    }
+    
     return [];
   }
 }
@@ -389,17 +409,28 @@ async function getPosition(symbol) {
     const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
     const positions = await getOpenPositions(formattedSymbol);
     
-    const position = positions.find(p => 
-      p.symbol === formattedSymbol && 
-      parseFloat(p.holdVol || 0) !== 0
-    );
+    console.log(`🔍 Looking for position: ${formattedSymbol}, found ${positions.length} positions`);
     
-    if (!position) return null;
+    const position = positions.find(p => {
+      const hasPosition = parseFloat(p.holdVol || p.volume || 0) !== 0;
+      const symbolMatch = p.symbol === formattedSymbol;
+      
+      if (hasPosition && symbolMatch) {
+        console.log(`✅ Found active position:`, p);
+        return true;
+      }
+      return false;
+    });
+    
+    if (!position) {
+      console.log(`❌ No active position found for ${formattedSymbol}`);
+      return null;
+    }
 
     const price = await getCurrentPrice(symbol);
-    const entryPrice = parseFloat(position.openAvgPrice || 0);
-    const qty = Math.abs(parseFloat(position.holdVol || 0));
-    const pnl = parseFloat(position.unrealised || 0);
+    const entryPrice = parseFloat(position.openAvgPrice || position.avgPrice || 0);
+    const qty = Math.abs(parseFloat(position.holdVol || position.volume || 0));
+    const pnl = parseFloat(position.unrealised || position.unrealizedPnl || 0);
     
     // Calculate ROI for short position
     let roi = 0;
@@ -407,7 +438,7 @@ async function getPosition(symbol) {
       roi = ((entryPrice - price) / entryPrice) * LEVERAGE * 100;
     }
 
-    return {
+    const positionData = {
       symbol,
       side: position.positionType === 2 ? 'SHORT' : 'LONG',
       entryPrice,
@@ -415,9 +446,13 @@ async function getPosition(symbol) {
       pnl,
       roi,
       lastPrice: price,
-      margin: parseFloat(position.im || 0),
+      margin: parseFloat(position.im || position.initialMargin || 0),
       notional: qty * price,
     };
+
+    console.log(`📊 Position data for ${symbol}:`, positionData);
+    return positionData;
+
   } catch (err) {
     console.error(`❌ [GET_POSITION_ERROR] ${symbol}:`, err.message);
     return null;

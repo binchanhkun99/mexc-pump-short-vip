@@ -77,6 +77,8 @@ async function syncPositionFromAPI(symbol) {
     const apiPos = await apiGetPosition(symbol);
     if (!apiPos) return null;
 
+    console.log(`🔄 Syncing position ${symbol}:`, apiPos);
+
     return {
       symbol: apiPos.symbol,
       side: apiPos.side,
@@ -386,35 +388,39 @@ export async function syncAllPositionsFromAPI() {
   try {
     console.log('🔄 Syncing positions từ API...');
     
-    // Lấy tất cả positions từ API
     const { getOpenPositions } = await import('./mexc-api.js');
     const apiPositions = await getOpenPositions();
+    
+    console.log(`📊 API returned ${apiPositions.length} positions`);
     
     // Clear positions cũ
     positions.clear();
     
-    // Thêm các positions đang mở
+    // Sync từng position
     for (const apiPos of apiPositions) {
-      if (parseFloat(apiPos.holdVol || 0) !== 0) {
-        const symbol = apiPos.symbol;
-        const price = await getCurrentPrice(symbol);
+      const symbol = apiPos.symbol;
+      const holdVol = parseFloat(apiPos.holdVol || apiPos.volume || 0);
+      
+      if (holdVol !== 0) {
+        console.log(`🔄 Syncing active position: ${symbol}, volume: ${holdVol}`);
         
+        const price = await getCurrentPrice(symbol);
         const pos = {
           symbol,
           side: apiPos.positionType === 2 ? "short" : "long",
-          entryPrice: parseFloat(apiPos.openAvgPrice || 0),
-          quantity: Math.abs(parseFloat(apiPos.holdVol || 0)),
-          notional: Math.abs(parseFloat(apiPos.holdVol || 0)) * price,
-          margin: parseFloat(apiPos.im || 0),
+          entryPrice: parseFloat(apiPos.openAvgPrice || apiPos.avgPrice || 0),
+          quantity: Math.abs(holdVol),
+          notional: Math.abs(holdVol) * price,
+          margin: parseFloat(apiPos.im || apiPos.initialMargin || 0),
           leverage: CONFIG.LEVERAGE,
           roi: 0,
-          pnl: parseFloat(apiPos.unrealised || 0),
+          pnl: parseFloat(apiPos.unrealised || apiPos.unrealizedPnl || 0),
           lastPrice: price,
           maxRoi: null,
           dcaIndex: 0,
           cutCount: 0,
           inHodlMode: false,
-          initialMargin: parseFloat(apiPos.im || 0)
+          initialMargin: parseFloat(apiPos.im || apiPos.initialMargin || 0)
         };
         
         // Tính ROI
