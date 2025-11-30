@@ -204,6 +204,7 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     // STEP 3 — TÍNH CONFIDENCE
     // ======================================================================
     let confidence = 0;
+    const confidenceReasons = []; // ĐẢM BẢO LUÔN ĐƯỢC ĐỊNH NGHĨA
 
     // Strength
     if (hasStrongReversal) confidence += 35;
