@@ -1,21 +1,21 @@
 // src/mexc-api.js
-// Updated to match the working test file
+// ĐÃ SỬA: contractInfo chuẩn, xử lý lỗi MEXC rõ ràng, không báo success khi order bị reject
 
 import * as dotenv from "dotenv";
 import { MexcFuturesClient } from "mexc-futures-sdk";
 import axios from "axios";
 import crypto from "crypto";
-import { HttpsProxyAgent } from 'https-proxy-agent';
+import { HttpsProxyAgent } from "https-proxy-agent";
 
 dotenv.config();
 
 const WEB_TOKEN = process.env.MEXC_AUTH_TOKEN ?? "";
 const API_KEY = process.env.MEXC_API_KEY || "";
 const API_SECRET = process.env.MEXC_SECRET_KEY || "";
-const BASE_URL = 'https://futures.mexc.co/api/v1';
+const BASE_URL = "https://futures.mexc.co/api/v1";
 const LEVERAGE = 20;
 
-// Proxy config
+// ======================= PROXY (nếu cần) =======================
 const proxyHost = "14.224.225.105";
 const proxyPort = 40220;
 const proxyUser = "user1762258669";
@@ -23,7 +23,7 @@ const proxyPass = "pass1762258669";
 const proxyUrl = `http://${proxyUser}:${proxyPass}@${proxyHost}:${proxyPort}`;
 const httpsAgent = new HttpsProxyAgent(proxyUrl);
 
-// Axios instance với proxy
+// Axios instance (hiện đang TẮT proxy để ổn định hơn)
 const axiosInstance = axios.create({
   // httpsAgent,
   // proxy: false,
@@ -36,60 +36,64 @@ const client = new MexcFuturesClient({
   baseURL: BASE_URL,
 });
 
-// Set auth headers
+// Set auth headers cho axios
 if (WEB_TOKEN) {
-  axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${WEB_TOKEN}`;
-}
-
-// Sign params
-function signParams(params) {
-  const timestamp = Date.now();
-  const query = { ...params, timestamp };
-  const queryString = new URLSearchParams(query).toString();
-  const signature = crypto.createHmac('sha256', API_SECRET).update(queryString).digest('hex');
-  return `${queryString}&signature=${signature}`;
+  axiosInstance.defaults.headers.common["Authorization"] = `Bearer ${WEB_TOKEN}`;
 }
 
 if (API_KEY) {
-  axiosInstance.defaults.headers.common['ApiKey'] = API_KEY;
-  axiosInstance.interceptors.request.use(config => {
-    if (config.url.includes('/private/')) {
-      const signed = signParams(config.params || {});
-      config.params = new URLSearchParams(signed);
-    }
-    return config;
-  });
+  axiosInstance.defaults.headers.common["ApiKey"] = API_KEY;
 }
+
+// ======================= SIGNATURE SPOT API =======================
+function signParams(params) {
+  // params: object đã bao gồm timestamp
+  const query = new URLSearchParams(params).toString();
+  const signature = crypto
+    .createHmac("sha256", API_SECRET)
+    .update(query)
+    .digest("hex");
+  return `${query}&signature=${signature}`;
+}
+
+// ======================= HELPERS =======================
+function formatSymbol(symbol) {
+  return symbol.includes("_USDT") ? symbol : symbol.replace("USDT", "_USDT");
+}
+
+// Cache contract info để tránh call quá nhiều
+const contractInfoCache = new Map();
+const CONTRACT_CACHE_TTL = 5 * 60 * 1000; // 5 phút
 
 // =========================================================
 //                  CORE API FUNCTIONS
 // =========================================================
 
-// Get current price - FIXED: Proper symbol handling
-async function getCurrentPrice(symbol) {
+// Get current price
+export async function getCurrentPrice(symbol) {
   try {
-    // Format symbol
-    const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
-    
-    // Try SDK first
+    const formattedSymbol = formatSymbol(symbol);
+
+    // 1) Thử qua SDK trước
     const tickerData = await client.getTicker(formattedSymbol);
     if (tickerData && tickerData.lastPrice) {
       return parseFloat(tickerData.lastPrice);
     }
-    
-    // Fallback to public API
-    const res = await axiosInstance.get('https://contract.mexc.com/api/v1/contract/ticker');
-    const tickers = res.data.data || [];
-    
-    const ticker = tickers.find(t => 
-      t.symbol === formattedSymbol || 
-      t.symbol === symbol
+
+    // 2) Fallback REST
+    const res = await axiosInstance.get(
+      "https://contract.mexc.com/api/v1/contract/ticker"
     );
-    
+    const tickers = res.data?.data || [];
+
+    const ticker = tickers.find(
+      (t) => t.symbol === formattedSymbol || t.symbol === symbol
+    );
+
     if (ticker) {
       return parseFloat(ticker.lastPrice || 0);
     }
-    
+
     return 0;
   } catch (error) {
     console.error(`❌ [PRICE_ERROR] ${symbol}:`, error.message);
@@ -97,18 +101,20 @@ async function getCurrentPrice(symbol) {
   }
 }
 
-// Get 24h volume
-async function getVolume24h(symbol) {
+// Get 24h volume (amount24 = USD notional 24h)
+export async function getVolume24h(symbol) {
   try {
-    const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
-    const res = await axiosInstance.get('https://contract.mexc.com/api/v1/contract/ticker');
-    const tickers = res.data.data || [];
-    
-    const ticker = tickers.find(t => 
-      t.symbol === formattedSymbol || 
-      t.symbol === symbol
+    const formattedSymbol = formatSymbol(symbol);
+
+    const res = await axiosInstance.get(
+      "https://contract.mexc.com/api/v1/contract/ticker"
     );
-    
+    const tickers = res.data?.data || [];
+
+    const ticker = tickers.find(
+      (t) => t.symbol === formattedSymbol || t.symbol === symbol
+    );
+
     if (ticker) {
       return parseFloat(ticker.amount24 || 0);
     }
@@ -120,194 +126,267 @@ async function getVolume24h(symbol) {
 }
 
 // Get futures balance (USDT)
-async function getFuturesBalance() {
+export async function getFuturesBalance() {
   try {
- const usdtAsset = await client.getAccountAsset('USDT');
-    console.log('🔍 USDT Asset response:', JSON.stringify(usdtAsset, null, 2));
-    
+    const usdtAsset = await client.getAccountAsset("USDT");
+    console.log(
+      "🔍 USDT Asset response:",
+      JSON.stringify(usdtAsset, null, 2)
+    );
+
     if (usdtAsset && usdtAsset.data) {
-      const balance = parseFloat(usdtAsset.data.availableBalance || usdtAsset.data.walletBalance || 0);
+      const balance = parseFloat(
+        usdtAsset.data.availableBalance || usdtAsset.data.walletBalance || 0
+      );
       console.log(`💰 Balance từ SDK: $${balance}`);
       return balance;
     }
-    
+
     return 0;
   } catch (err) {
-    console.error('❌ [FUTURES_BALANCE_ERROR]', err.message);
-      return 0;
-
+    console.error("❌ [FUTURES_BALANCE_ERROR]", err.message);
+    return 0;
   }
 }
 
-// Get contract info
-async function getContractInfo(symbol) {
-  try {
-    const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
-    const res = await axiosInstance.get('https://contract.mexc.com/api/v1/contract/detail', {
-      params: { symbol: formattedSymbol }
-    });
-    
-    if (res.data && res.data.data) {
+// Get contract info (CHUẨN NHẤT, CÓ CACHE + RETRY, KHÔNG FALLBACK ẢO)
+export async function getContractInfo(symbol) {
+  const formattedSymbol = formatSymbol(symbol);
+  const cacheKey = formattedSymbol;
+  const now = Date.now();
+
+  const cached = contractInfoCache.get(cacheKey);
+  if (cached && now - cached.timestamp < CONTRACT_CACHE_TTL) {
+    return cached.data;
+  }
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await axiosInstance.get(
+        "https://contract.mexc.com/api/v1/contract/detail",
+        {
+          params: { symbol: formattedSymbol },
+        }
+      );
+
+      if (!res.data || res.data.success === false || res.data.code !== 0) {
+        const msg =
+          res.data?.message || res.data?.msg || "Unknown contract detail error";
+        throw new Error(`MEXC contract.detail error: code=${res.data?.code}, msg=${msg}`);
+      }
+
       const contract = res.data.data;
-      return {
-        volumePrecision: contract.volScale || 0,
-        pricePrecision: contract.priceScale || 5,
-        minQuantity: contract.minVol || 1,
-        quantityUnit: contract.volUnit || 1,
-        contractMultiplier: contract.contractSize || 1,
-        contractSize: contract.contractSize || 1
+      const info = {
+        volumePrecision: contract.volScale ?? 0,
+        pricePrecision: contract.priceScale ?? 5,
+        minQuantity: parseFloat(contract.minVol ?? "1"),
+        quantityUnit: parseFloat(contract.volUnit ?? "1"),
+        contractMultiplier: parseFloat(contract.contractSize ?? "1"),
+        contractSize: parseFloat(contract.contractSize ?? "1"),
       };
+
+      contractInfoCache.set(cacheKey, { data: info, timestamp: now });
+      console.log("📄 [CONTRACT_INFO]", formattedSymbol, info);
+      return info;
+    } catch (error) {
+      lastError = error;
+      console.error(
+        `❌ [CONTRACT_INFO_ERROR] ${formattedSymbol} (attempt ${attempt}):`,
+        error.message
+      );
+      await new Promise((r) => setTimeout(r, 300 * attempt));
     }
-  } catch (error) {
-    console.error('❌ [CONTRACT_INFO_ERROR]:', error.message);
   }
-  
-  // Fallback values
-  return { 
-    volumePrecision: 0,
-    pricePrecision: 5,
-    minQuantity: 1,
-    quantityUnit: 1,
-    contractMultiplier: 1,
-    contractSize: 1
-  };
+
+  // Sau 3 lần retry vẫn fail → throw để phía trên xử lý, KHÔNG fallback ảo
+  throw new Error(
+    `Không lấy được contract info cho ${formattedSymbol}: ${lastError?.message}`
+  );
 }
 
-// Round volume
-// src/mexc-api.js - CHỈ SỬA PHẦN LÀM TRÒN
+// Round volume - quantity hiện tại đang tính theo "coin", không phải contracts.
+// Để tránh thay đổi logic hàng loạt, chỉ đảm bảo không bị làm tròn về 0 sai.
+export function roundVolume(
+  quantity,
+  precision,
+  quantityUnit = 1,
+  contractMultiplier = 1
+) {
+  console.log(
+    `🔧 Rounding volume: ${quantity}, precision: ${precision}, unit: ${quantityUnit}, multiplier: ${contractMultiplier}`
+  );
 
-// Round volume - FIX LÀM TRÒN VỀ 0
-function roundVolume(quantity, precision, quantityUnit = 1, contractMultiplier = 1) {
-  console.log(`🔧 Rounding volume: ${quantity}, precision: ${precision}, unit: ${quantityUnit}, multiplier: ${contractMultiplier}`);
-  
-  // Tính số contracts thực tế
-  const contracts = quantity / contractMultiplier;
-  
+  if (!isFinite(quantity) || quantity <= 0) {
+    console.log("   ❌ Invalid quantity, return 0");
+    return 0;
+  }
+
+  const safeMultiplier = contractMultiplier > 0 ? contractMultiplier : 1;
+
+  // quantity đang là "số coin". Đổi sang số contracts (nếu multiplier != 1)
+  const contracts = quantity / safeMultiplier;
+
   console.log(`   Raw contracts: ${contracts}`);
-  
+
+  let roundedContracts;
+
   if (precision === 0) {
-    // For precision 0, round to nearest integer
-    const roundedContracts = Math.round(contracts);
-    // Ensure it's multiple of quantityUnit
-    const finalContracts = Math.floor(roundedContracts / quantityUnit) * quantityUnit;
-    // Convert back to coins
-    const finalQuantity = finalContracts * contractMultiplier;
-    
-    console.log(`   Rounded contracts: ${roundedContracts} → Final contracts: ${finalContracts} → Final quantity: ${finalQuantity}`);
-    
-    // QUAN TRỌNG: Nếu finalQuantity = 0, dùng ít nhất 1 contract
-    if (finalQuantity <= 0 && contracts > 0) {
-      const minQuantity = quantityUnit * contractMultiplier;
-      console.log(`   ⚠️  Quantity rounded to 0, using minimum: ${minQuantity}`);
-      return minQuantity;
-    }
-    
-    return finalQuantity;
+    // Làm tròn integer
+    roundedContracts = Math.round(contracts);
   } else {
-    // For decimal precision
     const factor = Math.pow(10, precision);
-    const roundedContracts = Math.round(contracts * factor) / factor;
-    const finalContracts = Math.floor(roundedContracts / quantityUnit) * quantityUnit;
-    const finalQuantity = finalContracts * contractMultiplier;
-    
-    console.log(`   Rounded contracts: ${roundedContracts} → Final contracts: ${finalContracts} → Final quantity: ${finalQuantity}`);
-    
-    // QUAN TRỌNG: Nếu finalQuantity = 0, dùng ít nhất 1 contract
-    if (finalQuantity <= 0 && contracts > 0) {
-      const minQuantity = quantityUnit * contractMultiplier;
-      console.log(`   ⚠️  Quantity rounded to 0, using minimum: ${minQuantity}`);
-      return minQuantity;
-    }
-    
-    return finalQuantity;
+    roundedContracts = Math.round(contracts * factor) / factor;
   }
+
+  // Đảm bảo multiple của quantityUnit
+  const unit = quantityUnit || 1;
+  let finalContracts = roundedContracts;
+
+  if (unit !== 1) {
+    finalContracts = Math.floor(finalContracts / unit) * unit;
+  }
+
+  if (finalContracts <= 0) {
+    // Nếu sau khi làm tròn mà = 0, cố gắng đẩy lên min 1 * unit
+    finalContracts = unit;
+  }
+
+  const finalQuantity = finalContracts * safeMultiplier;
+
+  console.log(
+    `   Rounded contracts: ${roundedContracts} → Final contracts: ${finalContracts} → Final quantity: ${finalQuantity}`
+  );
+
+  return finalQuantity;
 }
-// Calculate position size với contract multiplier
-async function calculatePositionSize(symbol, positionPercent, confidence = 1) {
-  const balance = await getFuturesBalance();
-  const price = await getCurrentPrice(symbol);
-  const contractInfo = await getContractInfo(symbol);
-  
+
+// Tính position size (đang dùng theo logic cũ: quantity theo coin)
+export function calculatePositionSize(
+  balance,
+  price,
+  positionPercent,
+  confidence,
+  contractInfo
+) {
   if (price <= 0 || balance <= 0) return 0;
 
   const margin = balance * positionPercent * confidence;
   const notional = margin * LEVERAGE;
   const contracts = notional / price;
-  const coins = contracts / contractInfo.contractMultiplier;
-  
-  const quantity = roundVolume(coins, contractInfo.volumePrecision, contractInfo.quantityUnit);
+  const coins = contracts / (contractInfo?.contractMultiplier || 1);
+
+  const quantity = roundVolume(
+    coins,
+    contractInfo.volumePrecision,
+    contractInfo.quantityUnit,
+    contractInfo.contractMultiplier
+  );
   return quantity;
 }
 
-// Open position (SHORT) - FIXED: Using correct API format
-async function openPosition(symbol, quantity, side = 'SHORT', signalType = '') {
+// =========================================================
+//                  OPEN / CLOSE POSITION
+// =========================================================
+
+export async function openPosition(
+  symbol,
+  quantity,
+  side = "SHORT",
+  signalType = ""
+) {
   try {
     const contractInfo = await getContractInfo(symbol);
     const currentPrice = await getCurrentPrice(symbol);
-    
+
     if (currentPrice <= 0) {
-      return { success: false, error: 'Invalid price' };
+      return { success: false, error: "Invalid price" };
     }
 
-    // Format symbol
-    const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
-    
-    // Round quantity
-    const openQty = roundVolume(quantity, contractInfo.volumePrecision, contractInfo.quantityUnit);
-    
+    const formattedSymbol = formatSymbol(symbol);
+
+    // Round quantity (quantity hiện tại đang là "coins", chưa refactor về contracts)
+    const openQty = roundVolume(
+      quantity,
+      contractInfo.volumePrecision,
+      contractInfo.quantityUnit,
+      contractInfo.contractMultiplier
+    );
+
     if (openQty <= 0) {
-      return { success: false, error: 'Invalid quantity' };
+      return { success: false, error: "Invalid quantity" };
     }
 
-    console.log(`🎯 Opening ${side}: ${formattedSymbol}, Qty: ${openQty}, Price: ${currentPrice}`);
+    console.log(
+      `🎯 Opening ${side}: ${formattedSymbol}, Qty: ${openQty}, Price: ${currentPrice}`
+    );
 
-    // MEXC Futures order parameters
     const orderParams = {
       symbol: formattedSymbol,
       price: currentPrice,
       vol: openQty,
-      side: 3, // 3 = Open short, 1 = Open long
+      side: side === "LONG" ? 1 : 3, // 1 = Open long, 3 = Open short
       type: 5, // 5 = Market order
-      openType: 2, // 2 = Cross margin
+      openType: 2, // Cross margin
       leverage: LEVERAGE,
       positionId: 0,
     };
 
-    console.log('🔐 Order params:', orderParams);
+    console.log("🔐 Order params:", orderParams);
 
     const orderResponse = await client.submitOrder(orderParams);
 
-    console.log('📦 Order response:', orderResponse);
+    console.log("📦 Order response:", orderResponse);
+
+    // --------- XỬ LÝ LỖI TỪ MEXC ----------
+    if (orderResponse && typeof orderResponse === "object") {
+      const { success, code, message, msg } = orderResponse;
+      if (success === false || (typeof code !== "undefined" && code !== 0)) {
+        const errMsg = message || msg || "MEXC rejected order";
+        console.error("❌ [OPEN_ORDER_REJECTED]", {
+          symbol: formattedSymbol,
+          code,
+          message: errMsg,
+        });
+        return { success: false, error: errMsg, code };
+      }
+    }
 
     let orderId = `order_${Date.now()}`;
     let realPositionId = undefined;
 
+    // Lấy orderId từ data nếu có
     if (orderResponse && orderResponse.data) {
-      if (typeof orderResponse.data === 'string') {
+      if (typeof orderResponse.data === "string") {
         orderId = orderResponse.data;
-      } else if (typeof orderResponse.data === 'object') {
-        orderId = orderResponse.data.orderId?.toString() || `order_${Date.now()}`;
+      } else if (typeof orderResponse.data === "object") {
+        orderId =
+          orderResponse.data.orderId?.toString() || `order_${Date.now()}`;
         realPositionId = orderResponse.data.positionId?.toString();
       }
     }
 
-    // Try to get real position ID
+    // Thử lấy realPositionId từ getOpenPositions (không bắt buộc)
     if (!realPositionId) {
       try {
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise((resolve) => setTimeout(resolve, 3000));
         const positions = await getOpenPositions(formattedSymbol);
-        const position = positions.find(p => 
-          p.symbol === formattedSymbol && p.positionType === 2 // 2 = SHORT
+        const position = positions.find(
+          (p) => p.symbol === formattedSymbol && p.positionType === 2 // 2 = SHORT
         );
         if (position) {
-          realPositionId = position.id?.toString() || position.positionId?.toString();
+          realPositionId =
+            position.id?.toString() || position.positionId?.toString();
         }
       } catch (error) {
-        console.error('Error fetching realPositionId:', error);
+        console.error("Error fetching realPositionId:", error);
       }
     }
 
-    console.log(`✅ [ORDER_OPENED] ${formattedSymbol} | ${side} | Qty: ${openQty} | Order: ${orderId} | Position: ${realPositionId}`);
+    console.log(
+      `✅ [ORDER_OPENED] ${formattedSymbol} | ${side} | Qty: ${openQty} | Order: ${orderId} | Position: ${realPositionId}`
+    );
 
     return {
       success: true,
@@ -315,62 +394,58 @@ async function openPosition(symbol, quantity, side = 'SHORT', signalType = '') {
       positionId: realPositionId,
       realPositionId,
       quantity: openQty,
-      price: currentPrice
+      price: currentPrice,
     };
-
   } catch (err) {
     console.error(`❌ [OPEN_ORDER_ERROR] ${symbol}:`, err.message);
     if (err.response) {
-      console.error('❌ Response error:', err.response.data);
+      console.error("❌ Response error:", err.response.data);
     }
     return { success: false, error: err.message };
   }
 }
 
-async function getOpenPositions(symbol = null) {
+// Cache cho positions
+let positionsCache = null;
+let positionsCacheTime = 0;
+const CACHE_DURATION = 10_000; // 10s
+
+export async function getOpenPositions(symbol = null) {
   try {
-    // Check cache
     const now = Date.now();
-    if (positionsCache && (now - positionsCacheTime) < CACHE_DURATION) {
+    if (positionsCache && now - positionsCacheTime < CACHE_DURATION) {
       if (!symbol) return positionsCache;
-      
-      // Filter by symbol nếu có
-      return positionsCache.filter(p => 
-        !symbol || p.symbol === symbol.replace('USDT', '_USDT')
-      );
+      const formattedSymbol = symbol.replace("USDT", "_USDT");
+      return positionsCache.filter((p) => p.symbol === formattedSymbol);
     }
 
-    console.log('🔍 Fetching all positions via SDK...');
-    
+    console.log("🔍 Fetching all positions via SDK...");
+
     const response = await client.getOpenPositions();
-    
+
     let positionsData = [];
-    
-    // Xử lý response structure
+
     if (response && Array.isArray(response)) {
       positionsData = response;
     } else if (response && response.data && Array.isArray(response.data)) {
       positionsData = response.data;
     }
-    
-    // Filter chỉ positions có volume
-    const activePositions = positionsData.filter(p => 
-      parseFloat(p.holdVol || p.volume || 0) !== 0
+
+    const activePositions = positionsData.filter(
+      (p) => parseFloat(p.holdVol || p.volume || 0) !== 0
     );
-    
+
     console.log(`📊 Found ${activePositions.length} active positions`);
-    
-    // Update cache
+
     positionsCache = activePositions;
     positionsCacheTime = now;
-    
+
     if (symbol) {
-      const formattedSymbol = symbol.replace('USDT', '_USDT');
-      return activePositions.filter(p => p.symbol === formattedSymbol);
+      const formattedSymbol = symbol.replace("USDT", "_USDT");
+      return activePositions.filter((p) => p.symbol === formattedSymbol);
     }
-    
+
     return activePositions;
-    
   } catch (error) {
     console.error(`❌ [POSITIONS_SDK_ERROR]:`, error.message);
     return [];
@@ -378,100 +453,129 @@ async function getOpenPositions(symbol = null) {
 }
 
 // Close position (partial or full)
-async function closePosition(symbol, quantity, side = 'SHORT') {
+export async function closePosition(symbol, quantity, side = "SHORT") {
   try {
     const contractInfo = await getContractInfo(symbol);
     const currentPrice = await getCurrentPrice(symbol);
-    const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
-    
-    // Round quantity
-    const closeQty = roundVolume(quantity, contractInfo.volumePrecision, contractInfo.quantityUnit);
-    
-    console.log(`🎯 Closing ${side}: ${formattedSymbol}, Qty: ${closeQty}, Price: ${currentPrice}`);
+    const formattedSymbol = formatSymbol(symbol);
 
-    // MEXC Futures close order (opposite side)
+    const closeQty = roundVolume(
+      quantity,
+      contractInfo.volumePrecision,
+      contractInfo.quantityUnit,
+      contractInfo.contractMultiplier
+    );
+
+    console.log(
+      `🎯 Closing ${side}: ${formattedSymbol}, Qty: ${closeQty}, Price: ${currentPrice}`
+    );
+
     const orderParams = {
       symbol: formattedSymbol,
       price: currentPrice,
       vol: closeQty,
-      side: 4, // 4 = Close short, 2 = Close long
+      side: side === "LONG" ? 2 : 4, // 2 = Close long, 4 = Close short
       type: 5, // Market order
-      openType: 2, // Cross margin
+      openType: 2,
       leverage: LEVERAGE,
       positionId: 0,
     };
 
-    console.log('🔐 Close order params:', orderParams);
+    console.log("🔐 Close order params:", orderParams);
 
     const orderResponse = await client.submitOrder(orderParams);
+
+    console.log("📦 Close order response:", orderResponse);
+
+    if (orderResponse && typeof orderResponse === "object") {
+      const { success, code, message, msg } = orderResponse;
+      if (success === false || (typeof code !== "undefined" && code !== 0)) {
+        const errMsg = message || msg || "MEXC rejected close order";
+        console.error("❌ [CLOSE_ORDER_REJECTED]", {
+          symbol: formattedSymbol,
+          code,
+          message: errMsg,
+        });
+        return { success: false, pnl: 0, error: errMsg, code };
+      }
+    }
 
     let orderId = `close_${Date.now()}`;
     let pnl = 0;
 
     if (orderResponse && orderResponse.data) {
-      if (typeof orderResponse.data === 'string') {
+      if (typeof orderResponse.data === "string") {
         orderId = orderResponse.data;
-      } else if (typeof orderResponse.data === 'object') {
-        orderId = orderResponse.data.orderId?.toString() || orderId;
+      } else if (typeof orderResponse.data === "object") {
+        orderId =
+          orderResponse.data.orderId?.toString() || `close_${Date.now()}`;
       }
     }
 
-    console.log(`✅ [ORDER_CLOSED] ${formattedSymbol} | ${side} | Qty: ${closeQty} | Order: ${orderId}`);
+    console.log(
+      `✅ [ORDER_CLOSED] ${formattedSymbol} | ${side} | Qty: ${closeQty} | Order: ${orderId}`
+    );
 
-    // Estimate PnL (trong thực tế nên lấy từ API)
+    // Ước lượng PnL (tốt nhất nên lấy từ API PnL)
     const positions = await getOpenPositions(formattedSymbol);
-    const position = positions.find(p => p.symbol === formattedSymbol);
+    const position = positions.find((p) => p.symbol === formattedSymbol);
     if (position) {
-      pnl = parseFloat(position.unrealised || 0);
+      pnl = parseFloat(position.unrealised || position.unrealizedPnl || 0);
     }
 
     return {
       success: true,
       orderId,
-      pnl
+      pnl,
     };
-
   } catch (err) {
     console.error(`❌ [CLOSE_ORDER_ERROR] ${symbol}:`, err.message);
     if (err.response) {
-      console.error('❌ Response error:', err.response.data);
+      console.error("❌ Response error:", err.response.data);
     }
     return { success: false, pnl: 0, error: err.message };
   }
 }
 
 // Get position details
-async function getPosition(symbol) {
+export async function getPosition(symbol) {
   try {
-    // ĐẦU TIÊN: Lấy tất cả positions một lần
     const allPositions = await getOpenPositions();
-    
-    // Tìm position cho symbol cụ thể
-    const formattedSymbol = symbol.includes('_USDT') ? symbol : symbol.replace('USDT', '_USDT');
-    
-    const position = allPositions.find(p => {
+    const formattedSymbol = formatSymbol(symbol);
+
+    const position = allPositions.find((p) => {
       const hasPosition = parseFloat(p.holdVol || p.volume || 0) !== 0;
       const symbolMatch = p.symbol === formattedSymbol;
       return hasPosition && symbolMatch;
     });
-    
+
     if (!position) {
       return null;
     }
 
     const price = await getCurrentPrice(symbol);
-    const entryPrice = parseFloat(position.openAvgPrice || position.avgPrice || 0);
-    const qty = Math.abs(parseFloat(position.holdVol || position.volume || 0));
-    const pnl = parseFloat(position.unrealised || position.unrealizedPnl || 0);
-    
+    const entryPrice = parseFloat(
+      position.openAvgPrice || position.avgPrice || 0
+    );
+    const qty = Math.abs(
+      parseFloat(position.holdVol || position.volume || 0)
+    );
+    const pnl = parseFloat(
+      position.unrealised || position.unrealizedPnl || 0
+    );
+
     let roi = 0;
     if (entryPrice > 0) {
       roi = ((entryPrice - price) / entryPrice) * LEVERAGE * 100;
+      if (position.positionType !== 2) {
+        // LONG
+        roi = -roi;
+      }
     }
 
     return {
       symbol,
-      side: position.positionType === 2 ? 'SHORT' : 'LONG',
+      side: position.positionType === 2 ? "SHORT" : "LONG",
       entryPrice,
       quantity: qty,
       pnl,
@@ -480,21 +584,20 @@ async function getPosition(symbol) {
       margin: parseFloat(position.im || position.initialMargin || 0),
       notional: qty * price,
     };
-
   } catch (err) {
     console.error(`❌ [GET_POSITION_ERROR] ${symbol}:`, err.message);
     return null;
   }
 }
 
-// Get all open positions - CACHE KẾT QUẢ
-let positionsCache = null;
-let positionsCacheTime = 0;
-const CACHE_DURATION = 10000; // 10 seconds
+// ======================= TRANSFER & BALANCE =======================
 
-
-// Transfer between spot and futures
-async function universalTransfer({ fromAccountType, toAccountType, asset, amount }) {
+async function universalTransfer({
+  fromAccountType,
+  toAccountType,
+  asset,
+  amount,
+}) {
   try {
     const timestamp = Date.now();
     const params = {
@@ -511,33 +614,35 @@ async function universalTransfer({ fromAccountType, toAccountType, asset, amount
 
     const config = {
       headers: {
-        'X-MEXC-APIKEY': API_KEY,
-        'Content-Type': 'application/json',
+        "X-MEXC-APIKEY": API_KEY,
+        "Content-Type": "application/json",
       },
       timeout: 15000,
       httpsAgent,
     };
 
-    const res = await axios.post(url, null, config);
+    await axios.post(url, null, config);
 
-    console.log(`✅ [TRANSFER_SUCCESS] ${fromAccountType} → ${toAccountType}: ${amount} ${asset}`);
+    console.log(
+      `✅ [TRANSFER_SUCCESS] ${fromAccountType} → ${toAccountType}: ${amount} ${asset}`
+    );
     return true;
-
   } catch (err) {
-    console.error('❌ [TRANSFER_FAILED]:', err.response?.data || err.message);
+    console.error(
+      "❌ [TRANSFER_FAILED]:",
+      err.response?.data || err.message
+    );
     return false;
   }
 }
 
 // Check and transfer balance if low
-async function checkAndTransferBalance(minBalance = 40) {
-  const futuresBalance = await getFuturesBalance();
-  if (futuresBalance > minBalance) return true;
-  if (spotBalance < 10) return true;
-
-
-  // Get spot balance
+export async function checkAndTransferBalance(minBalance = 40) {
   try {
+    const futuresBalance = await getFuturesBalance();
+    if (futuresBalance > minBalance) return true;
+
+    // Lấy spot balance
     const timestamp = Date.now();
     const params = { recvWindow: 5000, timestamp };
     const signedQuery = signParams(params);
@@ -545,27 +650,27 @@ async function checkAndTransferBalance(minBalance = 40) {
 
     const config = {
       headers: {
-        'X-MEXC-APIKEY': API_KEY,
-        'Content-Type': 'application/json',
+        "X-MEXC-APIKEY": API_KEY,
+        "Content-Type": "application/json",
       },
       timeout: 15000,
       httpsAgent,
     };
 
     const res = await axios.get(url, config);
-    const assetBalance = res.data.balances.find((b) => b.asset === 'USDT');
-    const spotBalance = parseFloat(assetBalance?.free || '0');
+    const assetBalance = res.data.balances.find((b) => b.asset === "USDT");
+    const spotBalance = parseFloat(assetBalance?.free || "0");
 
     if (spotBalance <= 0) {
-      console.error('❌ [TRANSFER_ERROR] No spot balance to transfer');
+      console.error("❌ [TRANSFER_ERROR] No spot balance to transfer");
       return false;
     }
 
     const transferAmount = Math.min(spotBalance, 50);
     const success = await universalTransfer({
-      fromAccountType: 'SPOT',
-      toAccountType: 'FUTURE',
-      asset: 'USDT',
+      fromAccountType: "SPOT",
+      toAccountType: "FUTURE",
+      asset: "USDT",
       amount: transferAmount.toString(),
     });
 
@@ -576,21 +681,7 @@ async function checkAndTransferBalance(minBalance = 40) {
 
     return false;
   } catch (err) {
-    console.error('❌ [SPOT_BALANCE_ERROR]:', err.message);
+    console.error("❌ [SPOT_BALANCE_ERROR]:", err.message);
     return false;
   }
 }
-
-export {
-  getCurrentPrice,
-  getVolume24h,
-  calculatePositionSize,
-  openPosition,
-  closePosition,
-  getPosition,
-  getOpenPositions,
-  getFuturesBalance,
-  checkAndTransferBalance,
-  getContractInfo,
-  roundVolume
-};
