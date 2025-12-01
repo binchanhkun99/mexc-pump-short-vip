@@ -12,7 +12,8 @@ import {
   roundContracts, // Dùng roundContracts thống nhất
   calculateContracts,
   calculateDCAPositionSize,
-  getOpenPositions // Thêm import
+  getOpenPositions, // Thêm import
+  calculatePartialCloseSize 
 } from './mexc-api.js';
 import { logTrade, logError, logDebug } from './logger.js';
 
@@ -194,7 +195,8 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
         console.log(`⚠️ Không đủ balance cho DCA ${symbol}: ${currentBalance} < ${addMargin}`);
         return;
       }
-
+      // Mở position DCA thực tế (dùng openPosition với contractInfo)
+      const contractInfo = await getContractInfo(symbol);
       // SỬA: Dùng calculateDCAPositionSize để tính contracts đúng
       const addQty = await calculateDCAPositionSize(symbol, addMargin / currentBalance); // dcaPercent = addMargin / balance
       if (addQty <= 0) {
@@ -208,8 +210,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
 
       const addNotional = addQty * price * contractInfo.contractSize; // Verify notional sau rounding
       
-      // Mở position DCA thực tế (dùng openPosition với contractInfo)
-      const contractInfo = await getContractInfo(symbol);
+
       const dcaResult = await apiOpenPosition(symbol, addQty, 'SHORT', `DCA_${pos.dcaIndex + 1}`, contractInfo);
       
       if (dcaResult.success) {
