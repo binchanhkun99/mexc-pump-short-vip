@@ -11,6 +11,7 @@ import {
   getContractInfo,
   roundContracts, // Dùng roundContracts thống nhất
   calculateContracts,
+  calculateDCAPositionSize,
   getOpenPositions // Thêm import
 } from './mexc-api.js';
 import { logTrade, logError, logDebug } from './logger.js';
