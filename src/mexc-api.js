@@ -329,7 +329,7 @@ export async function openPosition(symbol, contracts, side, signalType, contract
       symbol: formattedSymbol,
       price: roundedPrice,
       vol: roundedContracts,
-      side: side === "SHORT" ? 3 : 1, // 1=Open short, 2=Open long (adjust theo MEXC)
+      side: side === "SHORT" ? 3 : 4, // 1=Open short, 2=Open long (adjust theo MEXC)
       type: 5, // Market
       openType: 2,
       leverage: LEVERAGE,
@@ -406,7 +406,7 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
       symbol: formattedSymbol,
       price: roundedPrice,
       vol: closeQty,
-      side: side === "LONG" ? 2 : 4, // 2 = Close long, 4 = Close short
+      side: side === "LONG" ? 1 : 2, // 2 = Close long, 4 = Close short
       type: 5, // Market order
       openType: 2,
       leverage: LEVERAGE,
