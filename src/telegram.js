@@ -12,9 +12,11 @@ export const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: false });
 // Hàm escape Markdown characters
 function escapeMarkdown(text) {
   if (typeof text !== 'string') return text;
-  
-  return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+
+  // Danh sách ký tự cần escape trong MarkdownV2
+  return text.replace(/([_*\[\]()~`>#+=|{}])/g, '\\$1');
 }
+
 
 // Hàm escape Markdown nhưng giữ URL
 function escapeMarkdownKeepUrls(text) {
