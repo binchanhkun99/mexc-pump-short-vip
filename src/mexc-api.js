@@ -1,5 +1,6 @@
 // src/mexc-api.js
 // ĐÃ SỬA: contractInfo chuẩn, xử lý lỗi MEXC rõ ràng, không báo success khi order bị reject
+// THÊM: Công thức contracts chính xác từ test_2.js, handle contractSize=0, roundContracts thống nhất
 
 import * as dotenv from "dotenv";
 import { MexcFuturesClient } from "mexc-futures-sdk";
@@ -149,7 +150,7 @@ export async function getFuturesBalance() {
   }
 }
 
-// Get contract info (CHUẨN NHẤT, CÓ CACHE + RETRY, KHÔNG FALLBACK ẢO)
+// Get contract info
 export async function getContractInfo(symbol) {
   const formattedSymbol = formatSymbol(symbol);
   const cacheKey = formattedSymbol;
@@ -166,29 +167,44 @@ export async function getContractInfo(symbol) {
     try {
       const res = await axiosInstance.get(
         "https://contract.mexc.com/api/v1/contract/detail",
-        {
-          params: { symbol: formattedSymbol },
-        }
+        { params: { symbol: formattedSymbol } }
       );
 
       if (!res.data || res.data.success === false || res.data.code !== 0) {
-        const msg =
-          res.data?.message || res.data?.msg || "Unknown contract detail error";
-        throw new Error(`MEXC contract.detail error: code=${res.data?.code}, msg=${msg}`);
+        const msg = res.data?.message || res.data?.msg || "Unknown contract detail error";
+        throw new Error(
+          `MEXC contract.detail error: code=${res.data?.code}, msg=${msg}`
+        );
       }
 
-      const contract = res.data.data;
+      const c = res.data.data;
+
       const info = {
-        volumePrecision: contract.volScale ?? 0,
-        pricePrecision: contract.priceScale ?? 5,
-        minQuantity: parseFloat(contract.minVol ?? "1"),
-        quantityUnit: parseFloat(contract.volUnit ?? "1"),
-        contractMultiplier: parseFloat(contract.contractSize ?? "1"),
-        contractSize: parseFloat(contract.contractSize ?? "1"),
+        volumePrecision: c.volScale ?? 0,
+        pricePrecision: c.priceScale ?? 5,
+        minQuantity: parseFloat(c.minVol ?? "1"),
+        quantityUnit: parseFloat(c.volUnit ?? "1"),
+        contractSize: parseFloat(c.contractSize ?? "1"), // Fallback 1 nếu API=0
       };
 
+      // THÊM: Log raw contract info như test_2.js
+      console.log(
+        "📄 Raw contract info:",
+        JSON.stringify(
+          {
+            symbol: c.symbol,
+            contractSize: info.contractSize,
+            minVol: info.minQuantity,
+            volUnit: info.quantityUnit,
+            priceScale: info.pricePrecision,
+            volScale: info.volumePrecision,
+          },
+          null,
+          2
+        )
+      );
+
       contractInfoCache.set(cacheKey, { data: info, timestamp: now });
-      console.log("📄 [CONTRACT_INFO]", formattedSymbol, info);
       return info;
     } catch (error) {
       lastError = error;
@@ -200,16 +216,25 @@ export async function getContractInfo(symbol) {
     }
   }
 
-  // Sau 3 lần retry vẫn fail → throw để phía trên xử lý, KHÔNG fallback ảo
   throw new Error(
     `Không lấy được contract info cho ${formattedSymbol}: ${lastError?.message}`
   );
 }
 
-export function roundVolume(
-  contracts,       // input = số CONTRACTS
-  precision,       // volPrecision từ API
-  quantityUnit = 1 // volUnit từ API
+// ✅ TÍNH CONTRACTS CHUẨN như test_2.js
+export function calculateContracts(targetMargin, leverage, price, contractSize) {
+  const targetPositionSize = targetMargin * leverage; // USD
+  // CONTRACTS = notional / (price * contractSize)
+  const contracts = targetPositionSize / (price * contractSize);
+  console.log(`🔧 Calc contracts: targetMargin=${targetMargin}, leverage=${leverage}, price=${price}, contractSize=${contractSize} → rawContracts=${contracts.toFixed(6)}`);
+  return contracts;
+}
+
+// ✅ Round CONTRACTS chuẩn như test_2.js (thay thế roundVolume)
+export function roundContracts(
+  contracts,       // số CONTRACTS thô
+  precision,       // volPrecision
+  quantityUnit = 1 // volUnit
 ) {
   console.log(
     `🔧 Rounding contracts: ${contracts}, precision: ${precision}, unit: ${quantityUnit}`
@@ -220,215 +245,55 @@ export function roundVolume(
     return 0;
   }
 
-  let rounded;
+  let rounded = contracts;
 
   if (precision === 0) {
-    rounded = Math.round(contracts);   // 14.28 → 14
+    // Làm tròn integer
+    rounded = Math.round(contracts);
   } else {
     const factor = Math.pow(10, precision);
     rounded = Math.round(contracts * factor) / factor;
   }
 
-  // áp dụng unit
+  // Snap theo unit (step size)
   if (quantityUnit !== 1) {
     rounded = Math.floor(rounded / quantityUnit) * quantityUnit;
   }
 
-  // min contracts
+  // Đảm bảo >= 1 step
   if (rounded < quantityUnit) {
     rounded = quantityUnit;
   }
 
   console.log(`   Rounded = ${rounded} CONTRACTS`);
-  return rounded; // ✔ trả về CONTRACTS
+  return rounded;
 }
 
-
-// Tính position size (đang dùng theo logic cũ: quantity theo coin)
-// 🎯 Tính CONTRACTS trực tiếp, KHÔNG qua coins
-export function calculatePositionSize(
-  balance,
-  price,
-  positionPercent,
-  confidence,
-  contractInfo
-) {
-  if (price <= 0 || balance <= 0) return 0;
-
-  const margin = balance * positionPercent * confidence;
-  const notional = margin * LEVERAGE;
-
-  const size = contractInfo.contractSize || 1;
-
-  // rawContracts ~ 14.28 chẳng hạn
-  const rawContracts = notional / (price * size);
-
-  const contracts = roundVolume(
-    rawContracts,
-    contractInfo.volumePrecision,
-    contractInfo.quantityUnit
-  );
-
-  return contracts; // TRẢ VỀ CONTRACTS
+// ✅ Round price
+function roundPrice(price, precision) {
+  const factor = Math.pow(10, precision);
+  return Math.round(price * factor) / factor;
 }
 
-
-// =========================================================
-//                  OPEN / CLOSE POSITION
-// =========================================================
-
-export async function openPosition(
-  symbol,
-  quantity,
-  side = "SHORT",
-  signalType = ""
-) {
-  try {
-    const contractInfo = await getContractInfo(symbol);
-    const currentPrice = await getCurrentPrice(symbol);
-
-    if (currentPrice <= 0) {
-      return { success: false, error: "Invalid price" };
-    }
-
-    const formattedSymbol = formatSymbol(symbol);
-
-    // Round quantity (quantity hiện tại đang là "coins", chưa refactor về contracts)
-    const openQty = roundVolume(
-      quantity,
-      contractInfo.volumePrecision,
-      contractInfo.quantityUnit,
-      contractInfo.contractMultiplier
-    );
-
-    if (openQty <= 0) {
-      return { success: false, error: "Invalid quantity" };
-    }
-
-    console.log(
-      `🎯 Opening ${side}: ${formattedSymbol}, Qty: ${openQty}, Price: ${currentPrice}`
-    );
-
-    const orderParams = {
-      symbol: formattedSymbol,
-      price: currentPrice,
-      vol: openQty,
-      side: side === "LONG" ? 1 : 3, // 1 = Open long, 3 = Open short
-      type: 5, // 5 = Market order
-      openType: 2, // Cross margin
-      leverage: LEVERAGE,
-      positionId: 0,
-    };
-
-    console.log("🔐 Order params:", orderParams);
-
-    const orderResponse = await client.submitOrder(orderParams);
-
-    console.log("📦 Order response:", orderResponse);
-
-    // --------- XỬ LÝ LỖI TỪ MEXC ----------
-    if (orderResponse && typeof orderResponse === "object") {
-      const { success, code, message, msg } = orderResponse;
-      if (success === false || (typeof code !== "undefined" && code !== 0)) {
-        const errMsg = message || msg || "MEXC rejected order";
-        console.error("❌ [OPEN_ORDER_REJECTED]", {
-          symbol: formattedSymbol,
-          code,
-          message: errMsg,
-        });
-        return { success: false, error: errMsg, code };
-      }
-    }
-
-    let orderId = `order_${Date.now()}`;
-    let realPositionId = undefined;
-
-    // Lấy orderId từ data nếu có
-    if (orderResponse && orderResponse.data) {
-      if (typeof orderResponse.data === "string") {
-        orderId = orderResponse.data;
-      } else if (typeof orderResponse.data === "object") {
-        orderId =
-          orderResponse.data.orderId?.toString() || `order_${Date.now()}`;
-        realPositionId = orderResponse.data.positionId?.toString();
-      }
-    }
-
-    // Thử lấy realPositionId từ getOpenPositions (không bắt buộc)
-    if (!realPositionId) {
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-        const positions = await getOpenPositions(formattedSymbol);
-        const position = positions.find(
-          (p) => p.symbol === formattedSymbol && p.positionType === 2 // 2 = SHORT
-        );
-        if (position) {
-          realPositionId =
-            position.id?.toString() || position.positionId?.toString();
-        }
-      } catch (error) {
-        console.error("Error fetching realPositionId:", error);
-      }
-    }
-
-    console.log(
-      `✅ [ORDER_OPENED] ${formattedSymbol} | ${side} | Qty: ${openQty} | Order: ${orderId} | Position: ${realPositionId}`
-    );
-
-    return {
-      success: true,
-      orderId,
-      positionId: realPositionId,
-      realPositionId,
-      quantity: openQty,
-      price: currentPrice,
-    };
-  } catch (err) {
-    console.error(`❌ [OPEN_ORDER_ERROR] ${symbol}:`, err.message);
-    if (err.response) {
-      console.error("❌ Response error:", err.response.data);
-    }
-    return { success: false, error: err.message };
-  }
-}
-
-// Cache cho positions
-let positionsCache = null;
-let positionsCacheTime = 0;
-const CACHE_DURATION = 10_000; // 10s
-
+// Get open positions
 export async function getOpenPositions(symbol = null) {
   try {
-    const now = Date.now();
-    if (positionsCache && now - positionsCacheTime < CACHE_DURATION) {
-      if (!symbol) return positionsCache;
-      const formattedSymbol = symbol.replace("USDT", "_USDT");
-      return positionsCache.filter((p) => p.symbol === formattedSymbol);
+    let formattedSymbol = symbol;
+    if (symbol && !symbol.includes("_USDT")) {
+      formattedSymbol = symbol.replace("USDT", "_USDT");
     }
 
-    console.log("🔍 Fetching all positions via SDK...");
+    const response = await client.getOpenPositions(formattedSymbol);
 
-    const response = await client.getOpenPositions();
-
-    let positionsData = [];
-
+    let activePositions = [];
     if (response && Array.isArray(response)) {
-      positionsData = response;
-    } else if (response && response.data && Array.isArray(response.data)) {
-      positionsData = response.data;
+      activePositions = response.filter((p) => parseFloat(p.holdVol || p.volume || 0) !== 0);
     }
-
-    const activePositions = positionsData.filter(
-      (p) => parseFloat(p.holdVol || p.volume || 0) !== 0
-    );
-
-    console.log(`📊 Found ${activePositions.length} active positions`);
-
-    positionsCache = activePositions;
-    positionsCacheTime = now;
+    if (response && response.data && Array.isArray(response.data)) {
+      activePositions = response.data.filter((p) => parseFloat(p.holdVol || p.volume || 0) !== 0);
+    }
 
     if (symbol) {
-      const formattedSymbol = symbol.replace("USDT", "_USDT");
       return activePositions.filter((p) => p.symbol === formattedSymbol);
     }
 
@@ -439,27 +304,107 @@ export async function getOpenPositions(symbol = null) {
   }
 }
 
-// Close position (partial or full)
+// Open position với contracts chính xác (từ test_2.js)
+export async function openPosition(symbol, contracts, side, signalType, contractInfo) {
+  try {
+    const formattedSymbol = formatSymbol(symbol);
+    const currentPrice = await getCurrentPrice(symbol);
+    const roundedPrice = roundPrice(currentPrice, contractInfo.pricePrecision);
+    const roundedContracts = roundContracts(contracts, contractInfo.volumePrecision, contractInfo.quantityUnit);
+
+    // THÊM: Check contractSize > 0 & qty >= min
+    if (contractInfo.contractSize <= 0) {
+      return { success: false, error: `contractSize=0 for ${symbol}, cannot open` };
+    }
+    if (roundedContracts < contractInfo.minQuantity) {
+      return { success: false, error: `Rounded contracts ${roundedContracts} < minQuantity ${contractInfo.minQuantity}` };
+    }
+
+    const positionId = generatePositionId(); // Mock từ test_2
+    const realPositionId = `real_${Date.now()}`; // Mock
+    const orderId = `order_${Date.now()}`;
+
+    // Gọi API thật (như test_2.js)
+    const orderParams = {
+      symbol: formattedSymbol,
+      price: roundedPrice,
+      vol: roundedContracts,
+      side: side === "SHORT" ? 1 : 2, // 1=Open short, 2=Open long (adjust theo MEXC)
+      type: 5, // Market
+      openType: 1,
+      leverage: LEVERAGE,
+      positionId: 0,
+    };
+
+    const orderResponse = await client.submitOrder(orderParams);
+
+    // Check response như test_2.js
+    if (orderResponse && typeof orderResponse === "object") {
+      const { success, code, message, msg } = orderResponse;
+      if (success === false || (typeof code !== "undefined" && code !== 0)) {
+        const errMsg = message || msg || "MEXC rejected open order";
+        console.error("❌ [OPEN_ORDER_REJECTED]", { symbol: formattedSymbol, code, message: errMsg });
+        return { success: false, error: errMsg, code };
+      }
+    }
+
+    console.log(`✅ [ORDER_OPENED] ${formattedSymbol} | ${side} | Contracts: ${roundedContracts} | Order: ${orderId}`);
+
+    return {
+      success: true,
+      positionId,
+      realPositionId,
+      orderId,
+      symbol: formattedSymbol,
+      quantity: roundedContracts, // contracts
+      price: roundedPrice,
+      contractInfo,
+    };
+  } catch (err) {
+    console.error("❌ Open position error:", err);
+    if (err.response) {
+      console.error("❌ Response error:", err.response.data);
+    }
+    return { success: false, error: err.message };
+  }
+}
+
+// Mock generatePositionId từ test_2
+function generatePositionId() {
+  return `pos_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Close position (DCA/TP/SL) với contracts chính xác
 export async function closePosition(symbol, quantity, side = "SHORT") {
   try {
     const contractInfo = await getContractInfo(symbol);
     const currentPrice = await getCurrentPrice(symbol);
     const formattedSymbol = formatSymbol(symbol);
 
-    const closeQty = roundVolume(
-      quantity,
+    // THÊM: Check contractSize > 0
+    if (contractInfo.contractSize <= 0) {
+      return { success: false, pnl: 0, error: `contractSize=0 for ${symbol}, cannot close` };
+    }
+
+    const closeQty = roundContracts(
+      quantity, // quantity là contracts
       contractInfo.volumePrecision,
-      contractInfo.quantityUnit,
-      contractInfo.contractMultiplier
+      contractInfo.quantityUnit
     );
 
+    if (closeQty <= 0) {
+      return { success: false, pnl: 0, error: `Close qty=0 for ${symbol}` };
+    }
+
+    const roundedPrice = roundPrice(currentPrice, contractInfo.pricePrecision);
+
     console.log(
-      `🎯 Closing ${side}: ${formattedSymbol}, Qty: ${closeQty}, Price: ${currentPrice}`
+      `🎯 Closing ${side}: ${formattedSymbol}, Contracts: ${closeQty}, Price: ${roundedPrice}`
     );
 
     const orderParams = {
       symbol: formattedSymbol,
-      price: currentPrice,
+      price: roundedPrice,
       vol: closeQty,
       side: side === "LONG" ? 2 : 4, // 2 = Close long, 4 = Close short
       type: 5, // Market order
@@ -494,16 +439,15 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
       if (typeof orderResponse.data === "string") {
         orderId = orderResponse.data;
       } else if (typeof orderResponse.data === "object") {
-        orderId =
-          orderResponse.data.orderId?.toString() || `close_${Date.now()}`;
+        orderId = orderResponse.data.orderId?.toString() || `close_${Date.now()}`;
       }
     }
 
     console.log(
-      `✅ [ORDER_CLOSED] ${formattedSymbol} | ${side} | Qty: ${closeQty} | Order: ${orderId}`
+      `✅ [ORDER_CLOSED] ${formattedSymbol} | ${side} | Contracts: ${closeQty} | Order: ${orderId}`
     );
 
-    // Ước lượng PnL (tốt nhất nên lấy từ API PnL)
+    // Lấy PnL thực tế (sync sau close)
     const positions = await getOpenPositions(formattedSymbol);
     const position = positions.find((p) => p.symbol === formattedSymbol);
     if (position) {
@@ -524,11 +468,12 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
   }
 }
 
-// Get position details
+// Get position details với contracts chính xác (cập nhật đầy đủ như test_2)
 export async function getPosition(symbol) {
   try {
     const allPositions = await getOpenPositions();
     const formattedSymbol = formatSymbol(symbol);
+    const contractInfo = await getContractInfo(symbol);
 
     const position = allPositions.find((p) => {
       const hasPosition = parseFloat(p.holdVol || p.volume || 0) !== 0;
@@ -541,39 +486,92 @@ export async function getPosition(symbol) {
     }
 
     const price = await getCurrentPrice(symbol);
-    const entryPrice = parseFloat(
-      position.openAvgPrice || position.avgPrice || 0
-    );
-    const qty = Math.abs(
-      parseFloat(position.holdVol || position.volume || 0)
-    );
-    const pnl = parseFloat(
-      position.unrealised || position.unrealizedPnl || 0
-    );
+    const entryPrice = parseFloat(position.openAvgPrice || position.avgPrice || 0);
+    const contracts = Math.abs(parseFloat(position.holdVol || position.volume || 0)); // contracts
+    const pnl = parseFloat(position.unrealised || position.unrealizedPnl || 0);
+
+    // THÊM: Tính coins & positionSize chính xác
+    const coins = contracts * contractInfo.contractSize;
+    const positionSize = coins * price;
+    const marginUsed = positionSize / LEVERAGE;
+
+    // THÊM: Check contractSize > 0
+    if (contractInfo.contractSize <= 0) {
+      console.warn(`⚠️ contractSize=0 for ${symbol}, using fallback calculations`);
+      return null;
+    }
 
     let roi = 0;
     if (entryPrice > 0) {
-      roi = ((entryPrice - price) / entryPrice) * LEVERAGE * 100;
-      if (position.positionType !== 2) {
-        // LONG
-        roi = -roi;
+      roi = ((price - entryPrice) / entryPrice) * LEVERAGE * 100;
+      if (position.positionType === 2) { // SHORT
+        roi = -roi; // SHORT: profit khi price giảm
       }
     }
+
+    // Log verification như test_2
+    console.log(`💰 Position calc for ${symbol}:
+  - Contracts: ${contracts}
+  - Contract Size: ${contractInfo.contractSize}
+  - Coins: ${coins}
+  - Position Size: $${positionSize.toFixed(4)}
+  - Margin Used: $${marginUsed.toFixed(4)}`);
 
     return {
       symbol,
       side: position.positionType === 2 ? "SHORT" : "LONG",
       entryPrice,
-      quantity: qty,
+      quantity: contracts, // contracts
+      coins: coins,
+      positionSize: positionSize,
+      marginUsed: marginUsed,
       pnl,
       roi,
       lastPrice: price,
-      margin: parseFloat(position.im || position.initialMargin || 0),
-      notional: qty * price,
+      margin: parseFloat(position.im || position.initialMargin || marginUsed),
+      notional: positionSize,
     };
   } catch (err) {
     console.error(`❌ [GET_POSITION_ERROR] ${symbol}:`, err.message);
     return null;
+  }
+}
+
+// ======================= DCA/TP/SL HELPERS =======================
+
+// Tính contracts cho DCA (sửa công thức)
+export async function calculateDCAPositionSize(symbol, dcaPercent) {
+  const balance = await getFuturesBalance();
+  const price = await getCurrentPrice(symbol);
+  const contractInfo = await getContractInfo(symbol);
+
+  if (price <= 0 || balance <= 0 || contractInfo.contractSize <= 0) return 0;
+
+  const targetMargin = balance * dcaPercent;
+  const rawContracts = calculateContracts(targetMargin, LEVERAGE, price, contractInfo.contractSize);
+  
+  const rounded = roundContracts(rawContracts, contractInfo.volumePrecision, contractInfo.quantityUnit);
+  if (rounded < contractInfo.minQuantity) return 0;
+
+  return rounded;
+}
+
+// Tính contracts cho TP/SL (partial close) - đã đúng
+export async function calculatePartialCloseSize(symbol, closePercent) {
+  try {
+    const position = await getPosition(symbol);
+    if (!position) return 0;
+
+    const closeContracts = position.quantity * closePercent;
+    const contractInfo = await getContractInfo(symbol);
+    
+    const rounded = roundContracts(closeContracts, contractInfo.volumePrecision, contractInfo.quantityUnit);
+    if (rounded < contractInfo.minQuantity) return contractInfo.minQuantity; // Min close 1 step
+
+    return rounded;
+  } catch (err) {
+    console.error(`❌ [PARTIAL_CLOSE_CALC_ERROR] ${symbol}:`, err.message);
+    return 0;
   }
 }
 

@@ -7,7 +7,7 @@ import {
   syncAllPositionsFromAPI, 
   logPositionsStatus,
   accountState,
-    positions // ← THÊM IMPORT NÀY
+    positions 
 
 } from './src/account.js';
 import { getCacheStats, clearCache } from './src/exchange.js';
@@ -107,7 +107,7 @@ async function gracefulShutdown() {
 // Khởi tạo và chạy bot
 async function initializeBot() {
   try {
-        cleanupOldLogs(7); // Xóa logs > 7 ngày
+    cleanupOldLogs(7); // Xóa logs > 7 ngày
 
     console.log('🔄 Đang khởi tạo bot...');
     
