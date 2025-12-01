@@ -10,7 +10,8 @@ import {
   checkAndTransferBalance,
   getContractInfo,
   roundContracts, // Dùng roundContracts thống nhất
-  calculateContracts // Thêm import
+  calculateContracts,
+  getOpenPositions // Thêm import
 } from './mexc-api.js';
 import { logTrade, logError, logDebug } from './logger.js';
 
