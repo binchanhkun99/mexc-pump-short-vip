@@ -329,7 +329,7 @@ export async function openPosition(symbol, contracts, side, signalType, contract
       symbol: formattedSymbol,
       price: roundedPrice,
       vol: roundedContracts,
-      side: side === "SHORT" ? 3 : 4, // 1=Open short, 2=Open long (adjust theo MEXC)
+      side: side === "SHORT" ? 3 : 4, // 3=Open short, 4=Open long (adjust theo MEXC)
       type: 5, // Market
       openType: 2,
       leverage: LEVERAGE,
@@ -381,13 +381,45 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
     const currentPrice = await getCurrentPrice(symbol);
     const formattedSymbol = formatSymbol(symbol);
 
-    // THÊM: Check contractSize > 0
     if (contractInfo.contractSize <= 0) {
       return { success: false, pnl: 0, error: `contractSize=0 for ${symbol}, cannot close` };
     }
 
+    // ✅ BƯỚC 1: LẤY POSITION VỚI FIELD NAME ĐÚNG
+    const allPositions = await getOpenPositions(formattedSymbol);
+    
+    console.log(`🔍 Searching for position: ${formattedSymbol}`);
+    console.log(`📊 Total positions returned: ${allPositions.length}`);
+    
+    const position = allPositions.find((p) => {
+      const hasPosition = parseFloat(p.holdVol || p.volume || 0) !== 0;
+      const symbolMatch = p.symbol === formattedSymbol;
+      console.log(`  Checking: ${p.symbol}, holdVol: ${p.holdVol}, match: ${symbolMatch && hasPosition}`);
+      return hasPosition && symbolMatch;
+    });
+
+    if (!position) {
+      console.error(`❌ [NO_POSITION] Không tìm thấy position cho ${formattedSymbol}`);
+      console.log(`Available symbols: ${allPositions.map(p => p.symbol).join(', ')}`);
+      return { 
+        success: false, 
+        pnl: 0, 
+        error: `Position không tồn tại hoặc đã đóng` 
+      };
+    }
+
+    // ✅ LẤY POSITION ID ĐÚNG FIELD NAME
+    const realPositionId = position.positionId; // ← ĐÚNG FIELD NAME!
+    
+    console.log(`✅ Found position:`, {
+      symbol: position.symbol,
+      positionId: realPositionId,
+      holdVol: position.holdVol,
+      positionType: position.positionType
+    });
+
     const closeQty = roundContracts(
-      quantity, // quantity là contracts
+      quantity,
       contractInfo.volumePrecision,
       contractInfo.quantityUnit
     );
@@ -399,25 +431,26 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
     const roundedPrice = roundPrice(currentPrice, contractInfo.pricePrecision);
 
     console.log(
-      `🎯 Closing ${side}: ${formattedSymbol}, Contracts: ${closeQty}, Price: ${roundedPrice}`
+      `🎯 Closing ${side}: ${formattedSymbol}, Contracts: ${closeQty}, Price: ${roundedPrice}, PositionId: ${realPositionId}`
     );
 
+    // ✅ ORDER PARAMS VỚI POSITION ID ĐÚNG
     const orderParams = {
       symbol: formattedSymbol,
       price: roundedPrice,
       vol: closeQty,
-      side: side === "LONG" ? 1 : 2, // 2 = Close long, 4 = Close short
+      side: side === "SHORT" ? 2 : 1, // 2=Close SHORT, 1=Close LONG
       type: 5, // Market order
       openType: 2,
       leverage: LEVERAGE,
-      positionId: 0,
+      positionId: realPositionId, 
     };
 
-    console.log("🔐 Close order params:", orderParams);
+    console.log("📋 Close order params:", JSON.stringify(orderParams, null, 2));
 
     const orderResponse = await client.submitOrder(orderParams);
 
-    console.log("📦 Close order response:", orderResponse);
+    console.log("📦 Close order response:", JSON.stringify(orderResponse, null, 2));
 
     if (orderResponse && typeof orderResponse === "object") {
       const { success, code, message, msg } = orderResponse;
@@ -427,6 +460,7 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
           symbol: formattedSymbol,
           code,
           message: errMsg,
+          positionId: realPositionId
         });
         return { success: false, pnl: 0, error: errMsg, code };
       }
@@ -444,30 +478,37 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
     }
 
     console.log(
-      `✅ [ORDER_CLOSED] ${formattedSymbol} | ${side} | Contracts: ${closeQty} | Order: ${orderId}`
+      `✅ [ORDER_CLOSED] ${formattedSymbol} | ${side} | Contracts: ${closeQty} | Order: ${orderId} | PositionId: ${realPositionId}`
     );
 
-    // Lấy PnL thực tế (sync sau close)
-    const positions = await getOpenPositions(formattedSymbol);
-    const position = positions.find((p) => p.symbol === formattedSymbol);
-    if (position) {
-      pnl = parseFloat(position.unrealised || position.unrealizedPnl || 0);
+    // Lấy PnL thực tế
+    await new Promise(r => setTimeout(r, 500));
+    
+    const updatedPositions = await getOpenPositions(formattedSymbol);
+    const updatedPosition = updatedPositions.find((p) => p.symbol === formattedSymbol);
+    
+    if (updatedPosition) {
+      // Partial close - vẫn còn position
+      pnl = parseFloat(updatedPosition.realised || updatedPosition.closeProfitLoss || 0);
+    } else {
+      // Full close - position đã đóng
+      pnl = parseFloat(position.realised || position.closeProfitLoss || 0);
     }
 
     return {
       success: true,
       orderId,
       pnl,
+      positionId: realPositionId
     };
   } catch (err) {
     console.error(`❌ [CLOSE_ORDER_ERROR] ${symbol}:`, err.message);
     if (err.response) {
-      console.error("❌ Response error:", err.response.data);
+      console.error("❌ Response data:", JSON.stringify(err.response.data, null, 2));
     }
     return { success: false, pnl: 0, error: err.message };
   }
 }
-
 // Get position details với contracts chính xác (cập nhật đầy đủ như test_2)
 export async function getPosition(symbol) {
   try {
@@ -487,17 +528,17 @@ export async function getPosition(symbol) {
 
     const price = await getCurrentPrice(symbol);
     const entryPrice = parseFloat(position.openAvgPrice || position.avgPrice || 0);
-    const contracts = Math.abs(parseFloat(position.holdVol || position.volume || 0)); // contracts
-    const pnl = parseFloat(position.unrealised || position.unrealizedPnl || 0);
+    const contracts = Math.abs(parseFloat(position.holdVol || position.volume || 0));
+    
+    const pnl = parseFloat(position.closeProfitLoss || 0); // realized PnL
+    const unrealizedPnl = parseFloat(position.profitRatio || 0) * parseFloat(position.im || 0); // unrealized
 
-    // THÊM: Tính coins & positionSize chính xác
     const coins = contracts * contractInfo.contractSize;
     const positionSize = coins * price;
-    const marginUsed = positionSize / LEVERAGE;
+    const marginUsed = parseFloat(position.im || position.oim || positionSize / LEVERAGE);
 
-    // THÊM: Check contractSize > 0
     if (contractInfo.contractSize <= 0) {
-      console.warn(`⚠️ contractSize=0 for ${symbol}, using fallback calculations`);
+      console.warn(`⚠️ contractSize=0 for ${symbol}`);
       return null;
     }
 
@@ -505,38 +546,43 @@ export async function getPosition(symbol) {
     if (entryPrice > 0) {
       roi = ((price - entryPrice) / entryPrice) * LEVERAGE * 100;
       if (position.positionType === 2) { // SHORT
-        roi = -roi; // SHORT: profit khi price giảm
+        roi = -roi;
       }
     }
 
-    // Log verification như test_2
-    console.log(`💰 Position calc for ${symbol}:
-  - Contracts: ${contracts}
-  - Contract Size: ${contractInfo.contractSize}
-  - Coins: ${coins}
-  - Position Size: $${positionSize.toFixed(4)}
-  - Margin Used: $${marginUsed.toFixed(4)}`);
+    console.log(`💰 Position data for ${symbol}:`, {
+      positionId: position.positionId,
+      contracts: contracts,
+      contractSize: contractInfo.contractSize,
+      coins: coins,
+      positionSize: positionSize.toFixed(4),
+      marginUsed: marginUsed.toFixed(4),
+      realizedPnl: pnl.toFixed(4),
+      unrealizedPnl: unrealizedPnl.toFixed(4),
+      roi: roi.toFixed(2)
+    });
 
     return {
       symbol,
       side: position.positionType === 2 ? "SHORT" : "LONG",
       entryPrice,
-      quantity: contracts, // contracts
+      quantity: contracts,
       coins: coins,
       positionSize: positionSize,
       marginUsed: marginUsed,
-      pnl,
+      pnl: unrealizedPnl, // unrealized PnL cho tracking
+      realizedPnl: pnl,   // realized PnL
       roi,
       lastPrice: price,
-      margin: parseFloat(position.im || position.initialMargin || marginUsed),
+      margin: marginUsed,
       notional: positionSize,
+      positionId: position.positionId, // ✅ ĐÚNG FIELD NAME
     };
   } catch (err) {
     console.error(`❌ [GET_POSITION_ERROR] ${symbol}:`, err.message);
     return null;
   }
 }
-
 // ======================= DCA/TP/SL HELPERS =======================
 
 // Tính contracts cho DCA (sửa công thức)
