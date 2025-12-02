@@ -388,8 +388,6 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
     // ✅ BƯỚC 1: LẤY POSITION VỚI FIELD NAME ĐÚNG
     const allPositions = await getOpenPositions(formattedSymbol);
     
-    console.log(`🔍 Searching for position: ${formattedSymbol}`);
-    console.log(`📊 Total positions returned: ${allPositions.length}`);
     
     const position = allPositions.find((p) => {
       const hasPosition = parseFloat(p.holdVol || p.volume || 0) !== 0;
@@ -409,7 +407,7 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
     }
 
     // ✅ LẤY POSITION ID ĐÚNG FIELD NAME
-    const realPositionId = position.positionId; // ← ĐÚNG FIELD NAME!
+    const realPositionId = position.positionId; 
     
     console.log(`✅ Found position:`, {
       symbol: position.symbol,
@@ -482,18 +480,30 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
     );
 
     // Lấy PnL thực tế
-    await new Promise(r => setTimeout(r, 500));
-    
+    await new Promise(r => setTimeout(r, 800));
     const updatedPositions = await getOpenPositions(formattedSymbol);
-    const updatedPosition = updatedPositions.find((p) => p.symbol === formattedSymbol);
+    const updatedPosition = updatedPositions.find((p) => p.symbol === formattedSymbol && p.positionId === realPositionId);
     
-    if (updatedPosition) {
-      // Partial close - vẫn còn position
-      pnl = parseFloat(updatedPosition.realised || updatedPosition.closeProfitLoss || 0);
-    } else {
-      // Full close - position đã đóng
-      pnl = parseFloat(position.realised || position.closeProfitLoss || 0);
-    }
+if (updatedPosition) {
+  // Partial close - vẫn còn position
+  // Lấy realized P/L từ field 'realised'
+  const newRealised = parseFloat(updatedPosition.realised || 0);
+  const oldRealised = parseFloat(position.realised || 0);
+  pnl = newRealised - oldRealised; // P/L từ lần close này
+} else {
+  // Full close - position đã đóng
+  // Lấy toàn bộ realized P/L
+  const closedPositions = await getOpenPositions(); // Lấy tất cả positions
+  const closedPos = closedPositions.find(p => p.positionId === realPositionId);
+  
+  if (closedPos) {
+    // Position vẫn tồn tại nhưng holdVol = 0
+    pnl = parseFloat(closedPos.realised || 0);
+  } else {
+    // Position đã biến mất, dùng giá trị từ position cũ
+    pnl = parseFloat(position.realised || 0);
+  }
+}
 
     return {
       success: true,
@@ -530,9 +540,26 @@ export async function getPosition(symbol) {
     const entryPrice = parseFloat(position.openAvgPrice || position.avgPrice || 0);
     const contracts = Math.abs(parseFloat(position.holdVol || position.volume || 0));
     
-    const pnl = parseFloat(position.closeProfitLoss || 0); // realized PnL
-    const unrealizedPnl = parseFloat(position.profitRatio || 0) * parseFloat(position.im || 0); // unrealized
-
+    // ✅ SỬA: Tính unrealized P/L đúng
+    // Công thức: (giá hiện tại - giá vào) * số lượng * kích thước hợp đồng * side
+    let unrealizedPnl = 0;
+    const contractSize = contractInfo.contractSize;
+    const positionValue = contracts * contractSize * price;
+    const entryValue = contracts * contractSize * entryPrice;
+    
+    if (position.positionType === 2) { // SHORT
+      unrealizedPnl = entryValue - positionValue;
+    } else { // LONG
+      unrealizedPnl = positionValue - entryValue;
+    }
+    
+    // Trừ phí (nếu có)
+    const fees = parseFloat(position.fee || 0);
+    unrealizedPnl -= Math.abs(fees);
+    
+    const pnl = parseFloat(position.realised || 0); // realized P/L
+    const totalPnl = pnl + unrealizedPnl; // tổng P/L
+    
     const coins = contracts * contractInfo.contractSize;
     const positionSize = coins * price;
     const marginUsed = parseFloat(position.im || position.oim || positionSize / LEVERAGE);
@@ -543,11 +570,9 @@ export async function getPosition(symbol) {
     }
 
     let roi = 0;
-    if (entryPrice > 0) {
-      roi = ((price - entryPrice) / entryPrice) * LEVERAGE * 100;
-      if (position.positionType === 2) { // SHORT
-        roi = -roi;
-      }
+    if (marginUsed > 0) {
+      // ROI = (P/L) / margin * 100%
+      roi = (totalPnl / marginUsed) * 100;
     }
 
     console.log(`💰 Position data for ${symbol}:`, {
@@ -557,9 +582,12 @@ export async function getPosition(symbol) {
       coins: coins,
       positionSize: positionSize.toFixed(4),
       marginUsed: marginUsed.toFixed(4),
+      entryPrice: entryPrice,
+      currentPrice: price,
       realizedPnl: pnl.toFixed(4),
       unrealizedPnl: unrealizedPnl.toFixed(4),
-      roi: roi.toFixed(2)
+      totalPnl: totalPnl.toFixed(4),
+      roi: roi.toFixed(2) + '%'
     });
 
     return {
@@ -572,11 +600,20 @@ export async function getPosition(symbol) {
       marginUsed: marginUsed,
       pnl: unrealizedPnl, // unrealized PnL cho tracking
       realizedPnl: pnl,   // realized PnL
+      totalPnl: totalPnl, // tổng P/L (realized + unrealized)
       roi,
       lastPrice: price,
       margin: marginUsed,
       notional: positionSize,
-      positionId: position.positionId, // ✅ ĐÚNG FIELD NAME
+      positionId: position.positionId,
+      // Thêm các field mới để debug
+      rawPositionData: {
+        holdVol: position.holdVol,
+        openAvgPrice: position.openAvgPrice,
+        realised: position.realised,
+        fee: position.fee,
+        profitRatio: position.profitRatio
+      }
     };
   } catch (err) {
     console.error(`❌ [GET_POSITION_ERROR] ${symbol}:`, err.message);
