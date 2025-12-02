@@ -221,7 +221,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
 
         const newQty = pos.quantity + addQty; // contracts
         const newCoins = newQty * contractInfo.contractSize;
-        const newEntry = (costOld + costAdd) / newCoins / contractInfo.contractSize; // weighted entry price
+        const newEntry = (costOld + costAdd) / newCoins;
 
         pos.entryPrice = newEntry;
         pos.quantity = newQty;
@@ -286,8 +286,22 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
         recomputeEquity();
 
         // Sync lại sau cut
-        const updatedPos = await syncPositionFromAPI(symbol);
-        if (updatedPos) Object.assign(pos, updatedPos);
+      const updatedPos = await syncPositionFromAPI(symbol);
+      if (updatedPos) {
+          const saved = {
+              dcaIndex: pos.dcaIndex,
+              cutCount: pos.cutCount,
+              inHodlMode: pos.inHodlMode,
+              maxRoi: pos.maxRoi,
+              initialMargin: pos.initialMargin
+          };
+
+          Object.assign(pos, updatedPos);
+
+          Object.assign(pos, saved);
+      }
+
+
 
         await notifyPositionEvent("✂️ PARTIAL STOP LOSS", symbol, [
           `• Cắt ${(portion * 100).toFixed(1)}% vị thế`,
