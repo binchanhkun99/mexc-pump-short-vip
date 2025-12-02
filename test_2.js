@@ -1,6 +1,6 @@
 // test-open-position-contract-fixed.js
 // Standalone JS test: Implements openPosition with proper contract-size (contracts-first) handling.
-// Tests opening SHORT on ZEC_USDT (or PIPPIN_USDT) với target margin cụ thể.
+// Tests opening SHORT on ZEC_USDT (or ALCH_USDT) với target margin cụ thể.
 // Polls position/PnL every 10s for 2 min.
 // Run: node test-open-position-contract-fixed.js
 // Stop: Ctrl+C
@@ -74,7 +74,7 @@ if (API_KEY) {
 
 // Mocks/Helpers based on function
 // Bạn có thể thêm symbol khác vào đây để test thêm
-const validSymbolsCache = new Set(["PIPPIN_USDT", "PIPPIN_USDT"]);
+const validSymbolsCache = new Set(["ALCH_USDT", "ALCH_USDT"]);
 
 // =====================================
 // Get contract info from API (contracts-first)
@@ -536,7 +536,7 @@ async function getPosition(symbol) {
 // Main test - CONTRACT-FIRST
 // ============================
 async function runTest() {
-  const symbol = "PIPPIN_USDT"; // hoặc "PIPPIN_USDT"
+  const symbol = "ALCH_USDT"; // hoặc "ALCH_USDT"
   const targetMargin = 0.7;
   const signalType = "TEST_PUMP_SIGNAL";
 

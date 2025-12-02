@@ -243,7 +243,6 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
  if (!pos.inHodlMode && pos.dcaIndex < CONFIG.DCA_PLAN.length) {
   const plan = CONFIG.DCA_PLAN[pos.dcaIndex];
   
-  //  ROI phải nằm trong khoảng (prevTrigger, currentTrigger]
   const prevTrigger = pos.dcaIndex > 0 ? CONFIG.DCA_PLAN[pos.dcaIndex - 1].roiTrigger : Infinity;
   const shouldDCA = pos.roi <= plan.roiTrigger && pos.roi > prevTrigger;
   
@@ -300,7 +299,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
         
         // Cập nhật position với data mới từ API
         const savedState = {
-          dcaIndex: newDcaIndex, // ✅ TĂNG lên level tiếp theo
+          dcaIndex: newDcaIndex, 
           cutCount: pos.cutCount,
           inHodlMode: pos.inHodlMode,
           maxRoi: Math.max(pos.maxRoi || 0, updatedApiPos.roi),
@@ -323,15 +322,17 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
             : 'MAX'
         });
         
-        await notifyPositionEvent("➕ DCA", symbol, [
-          `• DCA cấp số nhân: x${2 ** (pos.dcaIndex - 1)}`,
-          `• Entry cũ: $${usd(plan.oldEntry || pos.entryPrice)}`,
-          `• Giá DCA: $${usd(price)}`,
-          `• Entry mới: $${usd(pos.entryPrice)}`,
-          `• P/L hiện tại: $${usd(pos.pnl)} (${pct(pos.roi)})`,
-          `• Margin thêm: $${usd(addMargin)}`,
-          `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
-        ]);
+      await notifyPositionEvent("➕ DCA", symbol, [
+        `• DCA cấp số nhân: x${2 ** (pos.dcaIndex - 1)}`,
+        `• Entry cũ: $${usd(plan.oldEntry || pos.entryPrice)}`,
+        `• Giá DCA: $${usd(price)}`,
+        `• Entry mới: $${usd(pos.entryPrice)}`,
+        `• Total P/L: $${usd(pos.totalPnl || pos.pnl)} (${pct(pos.roi)})`, // ✅ FIX
+        `• Unrealized: $${usd(pos.unrealizedPnl || pos.pnl)}`, // Thêm chi tiết
+        `• Realized: $${usd(pos.realizedPnl || 0)}`,
+        `• Margin thêm: $${usd(addMargin)}`,
+        `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
+      ]);
       }
     } else {
       console.log(`❌ DCA ${symbol} thất bại:`, dcaResult.error);
