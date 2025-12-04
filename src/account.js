@@ -100,33 +100,30 @@ async function syncPositionFromAPI(symbol) {
 
     // Lấy position hiện tại trong memory (nếu có)
     const existingPos = positions.get(symbol);
-    
-    console.log(`🔄 Syncing position ${symbol} from API:`, {
-      roi: apiPos.roi?.toFixed(2) + '%',
-      pnl: '$' + apiPos.pnl?.toFixed(4),
-      margin: '$' + apiPos.marginUsed?.toFixed(4),
-      existingDcaIndex: existingPos?.dcaIndex || 0,
-      existingCutCount: existingPos?.cutCount || 0
-    });
-
-    return {
-      symbol: apiPos.symbol,
-      side: apiPos.side,
-      entryPrice: apiPos.entryPrice,
-      quantity: apiPos.quantity,
-      coins: apiPos.coins,
-      notional: apiPos.notional,
-      margin: apiPos.marginUsed,
+     const safePos = {
+      symbol: apiPos.symbol || symbol,
+      side: apiPos.side || "SHORT",
+      entryPrice: apiPos.entryPrice || 0,
+      quantity: apiPos.quantity || 0,
+      coins: apiPos.coins || 0,
+      notional: apiPos.notional || apiPos.positionSize || 0,
+      margin: apiPos.margin || apiPos.marginUsed || 0, // ✅ Dùng margin (có trong getPosition return)
       leverage: CONFIG.LEVERAGE,
-      roi: apiPos.roi,
-      pnl: apiPos.pnl,
-      lastPrice: apiPos.lastPrice,
-      maxRoi: apiPos.roi > 0 ? apiPos.roi : null,
+      roi: apiPos.roi || 0,
+      pnl: apiPos.totalPnl || apiPos.pnl || 0, // ✅ Dùng totalPnl thay vì pnl (unrealized)
+      realizedPnl: apiPos.realizedPnl || 0,
+      totalPnl: apiPos.totalPnl || apiPos.pnl || 0,
+      lastPrice: apiPos.lastPrice || 0,
+      maxRoi: (apiPos.roi > 0 ? apiPos.roi : null) || null,
+      // Giữ trạng thái quản lý
       dcaIndex: existingPos?.dcaIndex || 0,
       cutCount: existingPos?.cutCount || 0,
       inHodlMode: existingPos?.inHodlMode || false,
-      initialMargin: existingPos?.initialMargin || apiPos.marginUsed
+      initialMargin: existingPos?.initialMargin || apiPos.margin || apiPos.marginUsed || 0,
     };
+
+
+    return safePos;
   } catch (error) {
     console.error(`❌ Lỗi sync position ${symbol}:`, error);
     return null;
