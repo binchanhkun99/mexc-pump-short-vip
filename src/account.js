@@ -18,26 +18,28 @@ import {
 import { logTrade, logError, logDebug } from './logger.js';
 
 export const accountState = {
-  walletBalance: 0, // Sẽ lấy từ API thật
-  equity: 0,
+  availableBalance: 0,     
+  positionMargin: 0,       
+  walletBalance: 0,        // tổng tiền = available + margin
+  equity: 0,               // tổng tài sản có tính PnL
   baseCapital: CONFIG.ACCOUNT_BASE_CAPITAL,
   realizedPnl: 0,
 };
-
 export const positions = new Map();
 
 // Khởi tạo balance từ API
 export async function initializeAccount() {
   try {
-    const balance = await getFuturesBalance();
-    accountState.walletBalance = balance;
-    accountState.equity = balance;
-    console.log(`💰 Balance thực tế: $${balance}`);
+    const { available, margin, totalBalance, equity } = await getFuturesBalance();
+
+    accountState.availableBalance = available;
+    accountState.positionMargin = margin;
+    accountState.walletBalance = totalBalance;  
+    accountState.equity = equity;
   } catch (error) {
     console.error('❌ Lỗi khởi tạo account:', error);
   }
 }
-
 // ---------- Helper ----------
 function usd(v) {
   if (!isFinite(v)) return "0.00";
@@ -51,14 +53,19 @@ function pct(v) {
 }
 
 // ---------- Equity ----------
-export function recomputeEquity() {
-  let unrealized = 0;
-  for (const pos of positions.values()) unrealized += pos.pnl || 0;
-  accountState.equity = accountState.walletBalance + unrealized;
+export async function recomputeEquity() {
+  const { available, margin, totalBalance, equity } = await getFuturesBalance();
+
+  accountState.availableBalance = available;
+  accountState.positionMargin = margin;
+  accountState.walletBalance = totalBalance; // available + margin
+  accountState.equity = equity;              // từ API
 }
+
 
 // ---------- Notify ----------
 export async function notifyPositionEvent(title, symbol, body) {
+   await recomputeEquity();
   const msg =
     `${title}: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
     body.join('\n') +
@@ -261,14 +268,14 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
     
     // Check balance
     await checkAndTransferBalance();
-    const currentBalance = await getFuturesBalance();
-    if (currentBalance < addMargin) {
-      console.log(`⚠️ Không đủ balance cho DCA ${symbol}: ${currentBalance} < ${addMargin}`);
+    const { totalBalance } = await getFuturesBalance();
+    if (totalBalance  < addMargin) {
+        console.log(`⚠️ Không đủ balance cho DCA ${symbol}: ${totalBalance} < ${addMargin}`);
       return;
     }
     
     const contractInfo = await getContractInfo(symbol);
-    const addQty = await calculateDCAPositionSize(symbol, addMargin / currentBalance);
+    const addQty = await calculateDCAPositionSize(symbol, addMargin / totalBalance);
     
     if (addQty <= 0) {
       console.log(`⚠️ Quantity DCA quá nhỏ: ${addQty}`);
@@ -306,9 +313,6 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
         Object.assign(pos, updatedApiPos);
         Object.assign(pos, savedState);
         
-        // Cập nhật balance
-        accountState.walletBalance -= addMargin;
-        recomputeEquity();
         
         console.log(`✅ DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length} completed for ${symbol}:`, {
           newEntry: pos.entryPrice.toFixed(6),
@@ -352,7 +356,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
     
     if (closeQty > 0) {
       // Lấy balance trước khi cut
-      const balanceBefore = accountState.walletBalance;
+    const { totalBalance: balanceBefore } = await getFuturesBalance();
       
       const closeResult = await apiClosePosition(symbol, closeQty, 'SHORT');
       
@@ -377,12 +381,11 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
           Object.assign(pos, savedState);
           
           // Tính P/L thực từ sự thay đổi balance
-          const balanceAfter = await getFuturesBalance();
+          const { totalBalance: balanceAfter } = await getFuturesBalance();
           const realizedPnlFromCut = balanceAfter - balanceBefore;
           
-          accountState.walletBalance = balanceAfter;
-          accountState.realizedPnl += realizedPnlFromCut;
-          recomputeEquity();
+        
+          await recomputeEquity();
           
           console.log(`✂️ Partial cut successful for ${symbol}:`, {
             cutPnl: '$' + realizedPnlFromCut.toFixed(4),
@@ -414,7 +417,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
 
   if (enoughProfit && (droppedFromMax || priceCrossUpMA10)) {
     // Lấy balance trước khi TP
-    const balanceBefore = accountState.walletBalance;
+    const { totalBalance: balanceBefore } = await getFuturesBalance();
     const positionBefore = { ...pos }; // Lưu position trước khi đóng
     
     // Close toàn bộ position thực tế
@@ -425,16 +428,13 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
       await new Promise(r => setTimeout(r, 1000));
       
       // Lấy balance sau khi TP
-      const balanceAfter = await getFuturesBalance();
+      const { totalBalance: balanceAfter } = await getFuturesBalance();
       const realizedPnl = balanceAfter - balanceBefore;
       
-      // Cập nhật account với P/L thực tế
-      accountState.walletBalance = balanceAfter;
-      accountState.realizedPnl += realizedPnl;
       
       // Xóa position khỏi memory
       positions.delete(symbol);
-      recomputeEquity();
+      await recomputeEquity();
       
       console.log(`✅ Take profit successful for ${symbol}:`, {
         realizedPnl: '$' + realizedPnl.toFixed(4),
@@ -468,8 +468,8 @@ export async function openShortPosition(symbol, price, context) {
   try {
     // Check balance trước khi mở lệnh
     await checkAndTransferBalance();
-    const currentBalance = await getFuturesBalance();
-    logDebug(`Balance for ${symbol}`, { balance: currentBalance });
+    const { totalBalance, available } = await getFuturesBalance();
+    logDebug(`Balance for ${symbol}`, { totalBalance, available });
 
     if (positions.size >= CONFIG.MAX_OPEN_POSITIONS) {
       await notifyPositionEvent("⚠️ FULL VỊ THẾ", symbol, [
@@ -486,7 +486,7 @@ export async function openShortPosition(symbol, price, context) {
       return;
     }
 
-    const margin = currentBalance * CONFIG.ENTRY_PERCENT; // Ví dụ: 0.5% = 0.75$
+    const margin = totalBalance * CONFIG.ENTRY_PERCENT;
     if (margin <= 0) {
       await notifyPositionEvent("❌ MARGIN=0", symbol, [`• Balance quá thấp: $${currentBalance}`]);
       return;
@@ -583,8 +583,7 @@ export async function openShortPosition(symbol, price, context) {
     };
 
     positions.set(symbol, pos);
-    accountState.walletBalance -= actualMargin; // Dùng actual
-    recomputeEquity();
+    await recomputeEquity();
 
     logTrade(`Successfully opened position for ${symbol}`, {
       orderId: openResult.orderId,
@@ -670,7 +669,7 @@ export async function syncAllPositionsFromAPI() {
     }
     
     console.log(`✅ Đã sync ${positions.size} positions từ API`);
-    recomputeEquity();
+    await recomputeEquity();
     
   } catch (error) {
     console.error('❌ Lỗi sync positions:', error);

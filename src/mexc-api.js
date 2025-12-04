@@ -129,26 +129,29 @@ export async function getVolume24h(symbol) {
 // Get futures balance (USDT)
 export async function getFuturesBalance() {
   try {
-    const usdtAsset = await client.getAccountAsset("USDT");
-    console.log(
-      "🔍 USDT Asset response:",
-      JSON.stringify(usdtAsset, null, 2)
-    );
+    const res = await client.getAccountAsset("USDT");
 
-    if (usdtAsset && usdtAsset.data) {
-      const balance = parseFloat(
-        usdtAsset.data.availableBalance || usdtAsset.data.walletBalance || 0
-      );
-      console.log(`💰 Balance từ SDK: $${balance}`);
-      return balance;
-    }
+    const available = parseFloat(res.data.availableBalance || 0);
+    const margin = parseFloat(res.data.positionMargin || 0);
+    const equity = parseFloat(res.data.equity || 0);
 
-    return 0;
+    return {
+      available,
+      margin,
+      totalBalance: available + margin,
+      equity
+    };
+
   } catch (err) {
-    console.error("❌ [FUTURES_BALANCE_ERROR]", err.message);
-    return 0;
+    return {
+      available: 0,
+      margin: 0,
+      totalBalance: 0,
+      equity: 0
+    };
   }
 }
+
 
 // Get contract info
 export async function getContractInfo(symbol) {
@@ -622,16 +625,27 @@ export async function getPosition(symbol) {
 
 // Tính contracts cho DCA (sửa công thức)
 export async function calculateDCAPositionSize(symbol, dcaPercent) {
-  const balance = await getFuturesBalance();
+  const { totalBalance: balance } = await getFuturesBalance();  // dùng balance tổng
   const price = await getCurrentPrice(symbol);
   const contractInfo = await getContractInfo(symbol);
 
   if (price <= 0 || balance <= 0 || contractInfo.contractSize <= 0) return 0;
 
-  const targetMargin = balance * dcaPercent;
-  const rawContracts = calculateContracts(targetMargin, LEVERAGE, price, contractInfo.contractSize);
-  
-  const rounded = roundContracts(rawContracts, contractInfo.volumePrecision, contractInfo.quantityUnit);
+  const targetMargin = balance * dcaPercent;  // dcaPercent = % tổng ví muốn nạp thêm
+
+  const rawContracts = calculateContracts(
+    targetMargin,
+    LEVERAGE,
+    price,
+    contractInfo.contractSize
+  );
+
+  const rounded = roundContracts(
+    rawContracts,
+    contractInfo.volumePrecision,
+    contractInfo.quantityUnit
+  );
+
   if (rounded < contractInfo.minQuantity) return 0;
 
   return rounded;
@@ -705,8 +719,10 @@ async function universalTransfer({
 // Check and transfer balance if low
 export async function checkAndTransferBalance(minBalance = 40) {
   try {
-    const futuresBalance = await getFuturesBalance();
-    if (futuresBalance > minBalance) return true;
+    const { available: availableBalance } = await getFuturesBalance();
+
+    // Nếu available đủ lớn, không cần chuyển
+    if (availableBalance > minBalance) return true;
 
     // Lấy spot balance
     const timestamp = Date.now();
@@ -733,6 +749,7 @@ export async function checkAndTransferBalance(minBalance = 40) {
     }
 
     const transferAmount = Math.min(spotBalance, 50);
+
     const success = await universalTransfer({
       fromAccountType: "SPOT",
       toAccountType: "FUTURE",
