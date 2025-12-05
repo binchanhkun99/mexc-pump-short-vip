@@ -120,6 +120,8 @@ async function syncPositionFromAPI(symbol) {
       pnl: apiPos.totalPnl || apiPos.pnl || 0, // ✅ Dùng totalPnl thay vì pnl (unrealized)
       realizedPnl: apiPos.realizedPnl || 0,
       totalPnl: apiPos.totalPnl || apiPos.pnl || 0,
+      marginUsed: apiPos.marginUsed ?? apiPos.margin ?? 0, 
+
       lastPrice: apiPos.lastPrice || 0,
       maxRoi: (apiPos.roi > 0 ? apiPos.roi : null) || null,
       // Giữ trạng thái quản lý
@@ -653,9 +655,9 @@ export async function syncAllPositionsFromAPI() {
         const pos = await apiGetPosition(symbol);
         if (pos) {
           // ✅ SỬA: Tính ROI với đủ 3 tham số
-          if (pos.side === "short") {
+          if (pos.side === "SHORT") {
             pos.roi = calcShortRoi(pos.entryPrice, pos.lastPrice, pos.marginUsed || pos.margin);
-          } else if (pos.side === "long") {
+          } else if (pos.side === "LONG") {
             // Nếu cần tính ROI cho LONG
             pos.roi = calcLongRoi(pos.entryPrice, pos.lastPrice, pos.marginUsed || pos.margin);
           }

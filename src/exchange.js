@@ -88,7 +88,6 @@ export async function fetchAllTickers() {
 
     const raw = res.data.data;
 
-    // 🎯 QUAN TRỌNG: FILTER VOLUME như code cũ
     const filtered = raw
       .filter(t => 
         t.symbol?.endsWith('_USDT') &&
