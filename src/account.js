@@ -1,7 +1,7 @@
 // src/account.js - ĐÃ TÍCH HỢP API THẬT
-import { CONFIG } from './config.js';
-import { sendMessageWithAutoDelete } from './telegram.js';
-import { 
+import { CONFIG } from "./config.js";
+import { sendMessageWithAutoDelete } from "./telegram.js";
+import {
   getCurrentPrice,
   openPosition as apiOpenPosition, // Sửa tên để tránh conflict
   closePosition as apiClosePosition,
@@ -13,15 +13,15 @@ import {
   calculateContracts,
   calculateDCAPositionSize,
   getOpenPositions, // Thêm import
-  calculatePartialCloseSize 
-} from './mexc-api.js';
-import { logTrade, logError, logDebug } from './logger.js';
+  calculatePartialCloseSize,
+} from "./mexc-api.js";
+import { logTrade, logError, logDebug } from "./logger.js";
 
 export const accountState = {
-  availableBalance: 0,     
-  positionMargin: 0,       
-  walletBalance: 0,        // tổng tiền = available + margin
-  equity: 0,               // tổng tài sản có tính PnL
+  availableBalance: 0,
+  positionMargin: 0,
+  walletBalance: 0, // tổng tiền = available + margin
+  equity: 0, // tổng tài sản có tính PnL
   baseCapital: CONFIG.ACCOUNT_BASE_CAPITAL,
   realizedPnl: 0,
 };
@@ -34,22 +34,25 @@ export async function initializeAccount() {
 
     accountState.availableBalance = available;
     accountState.positionMargin = margin;
-    accountState.walletBalance = totalBalance;  
+    accountState.walletBalance = totalBalance;
     accountState.equity = equity;
   } catch (error) {
-    console.error('❌ Lỗi khởi tạo account:', error);
+    console.error("❌ Lỗi khởi tạo account:", error);
   }
 }
+
 // ---------- Helper ----------
 function usd(v) {
-  if (!isFinite(v)) return "0.00";
-  if (Math.abs(v) >= 1) return v.toFixed(2);
-  if (Math.abs(v) >= 0.01) return v.toFixed(4);
-  return v.toFixed(6);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0.00";
+  if (Math.abs(n) >= 1) return n.toFixed(2);
+  if (Math.abs(n) >= 0.01) return n.toFixed(4);
+  return n.toFixed(6);
 }
 
 function pct(v) {
-  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  const n = Number(v ?? 0);
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
 // ---------- Equity ----------
@@ -59,19 +62,19 @@ export async function recomputeEquity() {
   accountState.availableBalance = available;
   accountState.positionMargin = margin;
   accountState.walletBalance = totalBalance; // available + margin
-  accountState.equity = equity;              // từ API
+  accountState.equity = equity; // từ API
 }
-
 
 // ---------- Notify ----------
 export async function notifyPositionEvent(title, symbol, body) {
-   await recomputeEquity();
+  await recomputeEquity();
   const msg =
     `${title}: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
-    body.join('\n') +
+    body.join("\n") +
     `\n\nBalance: $${usd(accountState.walletBalance)} | Equity: $${usd(accountState.equity)}` +
-    `\nLãi đã rút : $159 - Lỗ: 0`+
+    `\nLãi đã rút : $159 - Lỗ: 0` +
     `\nOpen positions: ${positions.size}`;
+
   await sendMessageWithAutoDelete(msg, {
     parse_mode: "Markdown",
     disable_web_page_preview: true,
@@ -79,58 +82,85 @@ export async function notifyPositionEvent(title, symbol, body) {
 }
 
 // ---------- ROI SHORT ----------
-// Thay thế hàm calcShortRoi hiện tại bằng:
 function calcShortRoi(entry, price, margin) {
-  if (!margin || margin <= 0) return 0;
-  
-  // P/L cho SHORT: (entry - price) * số lượng
-  // Nhưng chúng ta cần biết số lượng, nên tính dựa trên margin
-  // Ước lượng: P/L ≈ (entry - price)/entry * notional
-  // notional = margin * leverage
+  const m = Number(margin ?? 0);
+  const e = Number(entry ?? 0);
+  const p = Number(price ?? 0);
+  if (!m || m <= 0 || !e || e <= 0) return 0;
+
   const leverage = CONFIG.LEVERAGE;
-  const notional = margin * leverage;
-  const priceChangePct = (entry - price) / entry;
+  const notional = m * leverage;
+  const priceChangePct = (e - p) / e;
   const pnl = priceChangePct * notional;
-  
-  // ROI = P/L / margin * 100%
-  const roi = (pnl / margin) * 100;
-  
-  console.log(`🔧 calcShortRoi: entry=${entry}, price=${price}, margin=${margin}, pnl=${pnl.toFixed(4)}, roi=${roi.toFixed(2)}%`);
-  
+  const roi = (pnl / m) * 100;
+
+  console.log(
+    `🔧 calcShortRoi: entry=${e}, price=${p}, margin=${m}, pnl=${pnl.toFixed(4)}, roi=${roi.toFixed(2)}%`
+  );
+
   return roi;
 }
+
+// ---------- ROI LONG ----------
+function calcLongRoi(entry, price, margin) {
+  const m = Number(margin ?? 0);
+  const e = Number(entry ?? 0);
+  const p = Number(price ?? 0);
+  if (!m || m <= 0 || !e || e <= 0) return 0;
+
+  const leverage = CONFIG.LEVERAGE;
+  const notional = m * leverage;
+  const priceChangePct = (p - e) / e;
+  const pnl = priceChangePct * notional;
+  const roi = (pnl / m) * 100;
+
+  console.log(
+    `🔧 calcLongRoi: entry=${e}, price=${p}, margin=${m}, pnl=${pnl.toFixed(4)}, roi=${roi.toFixed(2)}%`
+  );
+
+  return roi;
+}
+
 // Lấy position thực tế từ API (cập nhật với data mới từ mexc-api)
 async function syncPositionFromAPI(symbol) {
   try {
     const apiPos = await apiGetPosition(symbol);
     if (!apiPos) return null;
 
-    // Lấy position hiện tại trong memory (nếu có)
     const existingPos = positions.get(symbol);
-     const safePos = {
-      symbol: apiPos.symbol || symbol,
-      side: apiPos.side || "SHORT",
-      entryPrice: apiPos.entryPrice || 0,
-      quantity: apiPos.quantity || 0,
-      coins: apiPos.coins || 0,
-      notional: apiPos.notional || apiPos.positionSize || 0,
-      margin: apiPos.margin || apiPos.marginUsed || 0, // ✅ Dùng margin (có trong getPosition return)
+
+    const roiValue = Number(apiPos.roi ?? 0);
+    const marginValue = Number(apiPos.margin ?? apiPos.marginUsed ?? 0);
+    const notionalValue = Number(apiPos.notional ?? apiPos.positionSize ?? 0);
+
+    const safePos = {
+      symbol: apiPos.symbol ?? symbol,
+      side: apiPos.side ?? "SHORT",
+
+      entryPrice: Number(apiPos.entryPrice ?? 0),
+      quantity: Number(apiPos.quantity ?? 0),
+      coins: Number(apiPos.coins ?? 0),
+
+      notional: notionalValue,
+      margin: marginValue,
+      marginUsed: Number(apiPos.marginUsed ?? apiPos.margin ?? marginValue),
+
       leverage: CONFIG.LEVERAGE,
-      roi: apiPos.roi || 0,
-      pnl: apiPos.totalPnl || apiPos.pnl || 0, // ✅ Dùng totalPnl thay vì pnl (unrealized)
-      realizedPnl: apiPos.realizedPnl || 0,
-      totalPnl: apiPos.totalPnl || apiPos.pnl || 0,
-      marginUsed: apiPos.marginUsed ?? apiPos.margin ?? 0, 
 
-      lastPrice: apiPos.lastPrice || 0,
-      maxRoi: (apiPos.roi > 0 ? apiPos.roi : null) || null,
-      // Giữ trạng thái quản lý
-      dcaIndex: existingPos?.dcaIndex || 0,
-      cutCount: existingPos?.cutCount || 0,
-      inHodlMode: existingPos?.inHodlMode || false,
-      initialMargin: existingPos?.initialMargin || apiPos.margin || apiPos.marginUsed || 0,
+      roi: roiValue,
+      pnl: Number(apiPos.totalPnl ?? apiPos.pnl ?? 0),
+      realizedPnl: Number(apiPos.realizedPnl ?? 0),
+      totalPnl: Number(apiPos.totalPnl ?? apiPos.pnl ?? 0),
+
+      lastPrice: Number(apiPos.lastPrice ?? 0),
+
+      // ✅ Giữ trạng thái quản lý + default chắc chắn (không undefined)
+      dcaIndex: existingPos?.dcaIndex ?? 0,
+      cutCount: existingPos?.cutCount ?? 0,
+      inHodlMode: existingPos?.inHodlMode ?? false,
+      initialMargin: existingPos?.initialMargin ?? marginValue,
+      maxRoi: existingPos?.maxRoi ?? (roiValue > 0 ? roiValue : null),
     };
-
 
     return safePos;
   } catch (error) {
@@ -153,17 +183,21 @@ async function checkPositionExists(symbol) {
 }
 
 export async function updatePositionWithPrice(symbol, price, ma10) {
-  // Sync position thực tế từ API
+  // Nếu chưa có position trong memory -> sync từ API (tránh undefined / return sớm)
   let pos = positions.get(symbol);
-  if (!pos) return;
-  
-  // Lấy position mới nhất từ API với P/L chính xác
+  if (!pos) {
+    const bootPos = await syncPositionFromAPI(symbol);
+    if (!bootPos) return;
+    positions.set(symbol, bootPos);
+    pos = bootPos;
+  }
+
+  // Lấy position mới nhất từ API (safePos)
   const apiPos = await syncPositionFromAPI(symbol);
   if (!apiPos) {
-    // Position đã đóng trên API -> xóa khỏi memory
     console.log(`🗑️ Position ${symbol} đã đóng trên API, xóa khỏi memory`);
     positions.delete(symbol);
-    recomputeEquity();
+    await recomputeEquity();
     return;
   }
 
@@ -175,60 +209,64 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
     realizedPnl: apiPos.realizedPnl,
     marginUsed: apiPos.marginUsed,
     entryPrice: apiPos.entryPrice,
-    quantity: apiPos.quantity
+    quantity: apiPos.quantity,
   });
 
-  // Nếu chưa có position trong memory (sync từ API khi khởi động)
-  if (!pos) {
-    positions.set(symbol, apiPos);
-    pos = apiPos;
-    console.log(`🔄 Đã sync position ${symbol} từ API với P/L: $${apiPos.totalPnl?.toFixed(4) || apiPos.pnl?.toFixed(4)}`);
-  } else {
-    // Lưu lại các trạng thái quản lý trước khi cập nhật
-    const savedState = {
-      dcaIndex: pos.dcaIndex,
-      cutCount: pos.cutCount,
-      inHodlMode: pos.inHodlMode,
-      maxRoi: pos.maxRoi,
-      initialMargin: pos.initialMargin
-    };
+  // Lưu lại các trạng thái quản lý trước khi cập nhật
+  const savedState = {
+    dcaIndex: pos.dcaIndex,
+    cutCount: pos.cutCount,
+    inHodlMode: pos.inHodlMode,
+    maxRoi: pos.maxRoi,
+    initialMargin: pos.initialMargin,
+  };
 
-    // Cập nhật data thực tế từ API
-    Object.assign(pos, {
-      entryPrice: apiPos.entryPrice,
-      quantity: apiPos.quantity,
-      coins: apiPos.coins,
-      margin: apiPos.marginUsed, // Dùng marginUsed từ API
-      notional: apiPos.positionSize,
-      pnl: apiPos.totalPnl || apiPos.pnl, // Ưu tiên totalPnl
-      lastPrice: apiPos.lastPrice,
-      roi: apiPos.roi
-    });
+  // Cập nhật data market từ API (KHÔNG overwrite state quản lý)
+  Object.assign(pos, {
+    entryPrice: Number(apiPos.entryPrice ?? pos.entryPrice ?? 0),
+    quantity: Number(apiPos.quantity ?? pos.quantity ?? 0),
+    coins: Number(apiPos.coins ?? pos.coins ?? 0),
 
-    // Khôi phục trạng thái quản lý
-    Object.assign(pos, savedState);
-  }
+    margin: Number(apiPos.margin ?? apiPos.marginUsed ?? pos.margin ?? 0),
+    notional: Number(apiPos.notional ?? apiPos.positionSize ?? pos.notional ?? 0),
+    marginUsed: Number(apiPos.marginUsed ?? apiPos.margin ?? pos.marginUsed ?? 0),
+
+    pnl: Number(apiPos.totalPnl ?? apiPos.pnl ?? pos.pnl ?? 0),
+    totalPnl: Number(apiPos.totalPnl ?? apiPos.pnl ?? pos.totalPnl ?? 0),
+    realizedPnl: Number(apiPos.realizedPnl ?? pos.realizedPnl ?? 0),
+
+    lastPrice: Number(apiPos.lastPrice ?? price ?? pos.lastPrice ?? 0),
+    roi: Number(apiPos.roi ?? pos.roi ?? 0),
+  });
+
+  // Khôi phục trạng thái quản lý + đảm bảo default không undefined
+  Object.assign(pos, savedState);
+  pos.dcaIndex ??= 0;
+  pos.cutCount ??= 0;
+  pos.inHodlMode ??= false;
+  pos.initialMargin ??= pos.margin ?? 0;
+  pos.maxRoi ??= null;
 
   // Cập nhật max ROI
-  if (pos.maxRoi === null || pos.roi > pos.maxRoi) {
-    pos.maxRoi = pos.roi;
+  if (pos.maxRoi === null || Number(pos.roi ?? 0) > Number(pos.maxRoi)) {
+    pos.maxRoi = Number(pos.roi ?? 0);
   }
 
   // Recompute equity với P/L thực tế
-  recomputeEquity();
+  await recomputeEquity();
 
-  // Debug log sau khi update
+  // Debug log sau khi update (an toàn toFixed)
   console.log(`📊 Updated position ${symbol}:`, {
-    roi: pos.roi.toFixed(2) + '%',
-    pnl: '$' + pos.pnl.toFixed(4),
-    margin: '$' + pos.margin.toFixed(4),
-    maxRoi: pos.maxRoi?.toFixed(2) + '%',
+    roi: Number(pos.roi ?? 0).toFixed(2) + "%",
+    pnl: "$" + Number(pos.pnl ?? 0).toFixed(4),
+    margin: "$" + Number(pos.margin ?? 0).toFixed(4),
+    maxRoi: pos.maxRoi == null ? null : Number(pos.maxRoi).toFixed(2) + "%",
     dcaIndex: pos.dcaIndex,
-    inHodlMode: pos.inHodlMode
+    inHodlMode: pos.inHodlMode,
   });
 
   // --- Loss ratio for HODL ---
-  const unrealizedLoss = pos.pnl < 0 ? -pos.pnl : 0;
+  const unrealizedLoss = Number(pos.pnl ?? 0) < 0 ? -Number(pos.pnl ?? 0) : 0;
   const lossRatio = unrealizedLoss / Math.max(accountState.walletBalance, 1);
 
   // =========================================================
@@ -244,157 +282,156 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   }
 
   // =========================================================
-  //              2) DCA (MULTIPLIER x2) - API THẬT, SỬA CÔNG THỨC
+  //              2) DCA (MULTIPLIER x2)
   // =========================================================
- if (!pos.inHodlMode && pos.dcaIndex < CONFIG.DCA_PLAN.length) {
-  const plan = CONFIG.DCA_PLAN[pos.dcaIndex];
-  
-  const prevTrigger = pos.dcaIndex > 0 ? CONFIG.DCA_PLAN[pos.dcaIndex - 1].roiTrigger : Infinity;
-  const shouldDCA = pos.roi <= plan.roiTrigger && pos.roi > prevTrigger;
-  
-  console.log(`🎯 DCA CHECK for ${symbol}:`, {
-    dcaIndex: pos.dcaIndex,
-    currentROI: pos.roi?.toFixed(2) + '%',
-    currentTrigger: plan.roiTrigger + '%',
-    prevTrigger: prevTrigger === Infinity ? '∞' : prevTrigger + '%',
-    roiRange: `(${prevTrigger === Infinity ? '-∞' : prevTrigger}%, ${plan.roiTrigger}%]`,
-    inRange: shouldDCA,
-    condition1: `ROI ≤ ${plan.roiTrigger}%: ${pos.roi <= plan.roiTrigger}`,
-    condition2: `ROI > ${prevTrigger === Infinity ? '-∞' : prevTrigger + '%'}: ${pos.roi > prevTrigger}`
-  });
-  
-  if (shouldDCA) {
-    if (!pos.initialMargin) pos.initialMargin = pos.margin;
-    
-    const addMargin = pos.initialMargin * (2 ** pos.dcaIndex);
-    
-    // Check balance
-    await checkAndTransferBalance();
-    const { totalBalance } = await getFuturesBalance();
-    if (totalBalance  < addMargin) {
-        console.log(`⚠️ Không đủ balance cho DCA ${symbol}: ${totalBalance} < ${addMargin}`);
-      return;
-    }
-    
-    const contractInfo = await getContractInfo(symbol);
-    const addQty = await calculateDCAPositionSize(symbol, addMargin / totalBalance);
-    
-    if (addQty <= 0) {
-      console.log(`⚠️ Quantity DCA quá nhỏ: ${addQty}`);
-      return;
-    }
-    
-    console.log(`💰 Executing DCA Level ${pos.dcaIndex + 1} for ${symbol}:`, {
-      addMargin: '$' + addMargin.toFixed(4),
-      addQty: addQty,
-      currentROI: pos.roi?.toFixed(2) + '%',
-      marginMultiplier: `x${2 ** pos.dcaIndex}`
+  if (!pos.inHodlMode && pos.dcaIndex < CONFIG.DCA_PLAN.length) {
+    const plan = CONFIG.DCA_PLAN[pos.dcaIndex];
+
+    const prevTrigger =
+      pos.dcaIndex > 0 ? CONFIG.DCA_PLAN[pos.dcaIndex - 1].roiTrigger : Infinity;
+    const shouldDCA = pos.roi <= plan.roiTrigger && pos.roi > prevTrigger;
+
+    console.log(`🎯 DCA CHECK for ${symbol}:`, {
+      dcaIndex: pos.dcaIndex,
+      currentROI: Number(pos.roi ?? 0).toFixed(2) + "%",
+      currentTrigger: plan.roiTrigger + "%",
+      prevTrigger: prevTrigger === Infinity ? "∞" : prevTrigger + "%",
+      roiRange: `(${prevTrigger === Infinity ? "-∞" : prevTrigger}%, ${plan.roiTrigger}%]`,
+      inRange: shouldDCA,
+      condition1: `ROI ≤ ${plan.roiTrigger}%: ${pos.roi <= plan.roiTrigger}`,
+      condition2: `ROI > ${prevTrigger === Infinity ? "-∞" : prevTrigger + "%"}: ${pos.roi > prevTrigger}`,
     });
-    
-    const dcaResult = await apiOpenPosition(symbol, addQty, 'SHORT', `DCA_${pos.dcaIndex + 1}`, contractInfo);
-    
-    if (dcaResult.success) {
-      // Chờ API cập nhật
-      await new Promise(r => setTimeout(r, 800));
-      
-      // Lấy lại position từ API sau khi DCA
-      const updatedApiPos = await syncPositionFromAPI(symbol);
-      if (updatedApiPos) {
-        // ✅ TĂNG dcaIndex ngay sau khi DCA thành công
-        const newDcaIndex = pos.dcaIndex + 1;
-        
-        // Cập nhật position với data mới từ API
-        const savedState = {
-          dcaIndex: newDcaIndex, 
-          cutCount: pos.cutCount,
-          inHodlMode: pos.inHodlMode,
-          maxRoi: Math.max(pos.maxRoi || 0, updatedApiPos.roi),
-          initialMargin: pos.initialMargin + addMargin
-        };
-        
-        Object.assign(pos, updatedApiPos);
-        Object.assign(pos, savedState);
-        
-        
-        console.log(`✅ DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length} completed for ${symbol}:`, {
-          newEntry: pos.entryPrice.toFixed(6),
-          newROI: pos.roi?.toFixed(2) + '%',
-          newMargin: '$' + pos.margin.toFixed(4),
-          nextTrigger: newDcaIndex < CONFIG.DCA_PLAN.length 
-            ? CONFIG.DCA_PLAN[newDcaIndex].roiTrigger + '%' 
-            : 'MAX'
-        });
-        
-      await notifyPositionEvent("➕ DCA", symbol, [
-        `• DCA cấp số nhân: x${2 ** (pos.dcaIndex - 1)}`,
-        `• Entry cũ: $${usd(plan.oldEntry || pos.entryPrice)}`,
-        `• Giá DCA: $${usd(price)}`,
-        `• Entry mới: $${usd(pos.entryPrice)}`,
-        `• Total P/L: $${usd(pos.totalPnl || pos.pnl)} (${pct(pos.roi)})`, // ✅ FIX
-        `• Unrealized: $${usd(pos.unrealizedPnl || pos.pnl)}`, // Thêm chi tiết
-        `• Realized: $${usd(pos.realizedPnl || 0)}`,
-        `• Margin thêm: $${usd(addMargin)}`,
-        `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
-      ]);
+
+    if (shouldDCA) {
+      if (!pos.initialMargin) pos.initialMargin = pos.margin ?? 0;
+
+      const addMargin = pos.initialMargin * 2 ** pos.dcaIndex;
+
+      // Check balance
+      await checkAndTransferBalance();
+      const { totalBalance } = await getFuturesBalance();
+      if (totalBalance < addMargin) {
+        console.log(`⚠️ Không đủ balance cho DCA ${symbol}: ${totalBalance} < ${addMargin}`);
+        return;
+      }
+
+      const contractInfo = await getContractInfo(symbol);
+      const addQty = await calculateDCAPositionSize(symbol, addMargin / totalBalance);
+
+      if (addQty <= 0) {
+        console.log(`⚠️ Quantity DCA quá nhỏ: ${addQty}`);
+        return;
+      }
+
+      console.log(`💰 Executing DCA Level ${pos.dcaIndex + 1} for ${symbol}:`, {
+        addMargin: "$" + addMargin.toFixed(4),
+        addQty,
+        currentROI: Number(pos.roi ?? 0).toFixed(2) + "%",
+        marginMultiplier: `x${2 ** pos.dcaIndex}`,
+      });
+
+      const dcaResult = await apiOpenPosition(
+        symbol,
+        addQty,
+        "SHORT",
+        `DCA_${pos.dcaIndex + 1}`,
+        contractInfo
+      );
+
+      if (dcaResult.success) {
+        await new Promise((r) => setTimeout(r, 800));
+
+        const updatedApiPos = await syncPositionFromAPI(symbol);
+        if (updatedApiPos) {
+          const newDcaIndex = pos.dcaIndex + 1;
+
+          const savedState2 = {
+            dcaIndex: newDcaIndex,
+            cutCount: pos.cutCount,
+            inHodlMode: pos.inHodlMode,
+            maxRoi: Math.max(Number(pos.maxRoi ?? 0), Number(updatedApiPos.roi ?? 0)),
+            initialMargin: Number(pos.initialMargin ?? 0) + addMargin,
+          };
+
+          Object.assign(pos, updatedApiPos);
+          Object.assign(pos, savedState2);
+
+          console.log(`✅ DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length} completed for ${symbol}:`, {
+            newEntry: Number(pos.entryPrice ?? 0).toFixed(6),
+            newROI: Number(pos.roi ?? 0).toFixed(2) + "%",
+            newMargin: "$" + Number(pos.margin ?? 0).toFixed(4),
+            nextTrigger:
+              newDcaIndex < CONFIG.DCA_PLAN.length
+                ? CONFIG.DCA_PLAN[newDcaIndex].roiTrigger + "%"
+                : "MAX",
+          });
+
+          await notifyPositionEvent("➕ DCA", symbol, [
+            `• DCA cấp số nhân: x${2 ** (pos.dcaIndex - 1)}`,
+            `• Entry cũ: $${usd(plan.oldEntry || pos.entryPrice)}`,
+            `• Giá DCA: $${usd(price)}`,
+            `• Entry mới: $${usd(pos.entryPrice)}`,
+            `• Total P/L: $${usd(pos.totalPnl || pos.pnl)} (${pct(pos.roi)})`,
+            `• Unrealized: $${usd(pos.unrealizedPnl || pos.pnl)}`,
+            `• Realized: $${usd(pos.realizedPnl || 0)}`,
+            `• Margin thêm: $${usd(addMargin)}`,
+            `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
+          ]);
+        }
+      } else {
+        console.log(`❌ DCA ${symbol} thất bại:`, dcaResult.error);
+        await notifyPositionEvent("❌ DCA THẤT BẠI", symbol, [
+          `• Lỗi: ${dcaResult.error}`,
+          `• Không thêm margin: $${usd(addMargin)}`,
+        ]);
       }
     } else {
-      console.log(`❌ DCA ${symbol} thất bại:`, dcaResult.error);
-      await notifyPositionEvent("❌ DCA THẤT BẠI", symbol, [
-        `• Lỗi: ${dcaResult.error}`,
-        `• Không thêm margin: $${usd(addMargin)}`,
-      ]);
+      console.log(
+        `⏸️  Skip DCA for ${symbol}: ROI ${Number(pos.roi ?? 0).toFixed(2)}% not in range (${prevTrigger === Infinity ? "-∞" : prevTrigger}%, ${plan.roiTrigger}%]`
+      );
     }
-  } else {
-    console.log(`⏸️  Skip DCA for ${symbol}: ROI ${pos.roi?.toFixed(2)}% not in range (${prevTrigger === Infinity ? '-∞' : prevTrigger}%, ${plan.roiTrigger}%]`);
   }
-}
+
   // =========================================================
   //      3) PARTIAL CUT — API THẬT
   // =========================================================
   const cutThreshold = accountState.baseCapital * CONFIG.PARTIAL_CUT_RATIO;
   if (accountState.equity < cutThreshold && pos.cutCount < CONFIG.MAX_PARTIAL_CUTS) {
-    const portion = 0.5; // 50% cut
+    const portion = 0.5;
     const closeQty = await calculatePartialCloseSize(symbol, portion);
-    
+
     if (closeQty > 0) {
-      // Lấy balance trước khi cut
-    const { totalBalance: balanceBefore } = await getFuturesBalance();
-      
-      const closeResult = await apiClosePosition(symbol, closeQty, 'SHORT');
-      
+      const { totalBalance: balanceBefore } = await getFuturesBalance();
+
+      const closeResult = await apiClosePosition(symbol, closeQty, "SHORT");
+
       if (closeResult.success) {
-        // Chờ API cập nhật
-        await new Promise(r => setTimeout(r, 800));
-        
-        // Lấy lại position từ API sau khi cut
+        await new Promise((r) => setTimeout(r, 800));
+
         const updatedApiPos = await syncPositionFromAPI(symbol);
         if (updatedApiPos) {
-          // Lưu trạng thái quản lý
           const savedState = {
             dcaIndex: pos.dcaIndex,
-            cutCount: pos.cutCount + 1, // Tăng cut count
+            cutCount: pos.cutCount + 1,
             inHodlMode: pos.inHodlMode,
             maxRoi: pos.maxRoi,
-            initialMargin: pos.initialMargin * (1 - portion) // Giảm initial margin
+            initialMargin: Number(pos.initialMargin ?? 0) * (1 - portion),
           };
-          
-          // Cập nhật data từ API
+
           Object.assign(pos, updatedApiPos);
           Object.assign(pos, savedState);
-          
-          // Tính P/L thực từ sự thay đổi balance
+
           const { totalBalance: balanceAfter } = await getFuturesBalance();
           const realizedPnlFromCut = balanceAfter - balanceBefore;
-          
-        
+
           await recomputeEquity();
-          
+
           console.log(`✂️ Partial cut successful for ${symbol}:`, {
-            cutPnl: '$' + realizedPnlFromCut.toFixed(4),
+            cutPnl: "$" + realizedPnlFromCut.toFixed(4),
             newQuantity: pos.quantity,
-            newMargin: pos.margin.toFixed(4),
-            newROI: pos.roi.toFixed(2) + '%',
-            cutCount: pos.cutCount
+            newMargin: Number(pos.margin ?? 0).toFixed(4),
+            newROI: Number(pos.roi ?? 0).toFixed(2) + "%",
+            cutCount: pos.cutCount,
           });
 
           await notifyPositionEvent("✂️ PARTIAL STOP LOSS", symbol, [
@@ -411,45 +448,40 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   }
 
   // =========================================================
-  //           4) TAKE PROFIT - API THẬT (SỬA P/L)
+  //           4) TAKE PROFIT - API THẬT
   // =========================================================
   const enoughProfit = pos.roi >= CONFIG.MIN_PROFIT_ROI_FOR_TRAIL;
-  const droppedFromMax = pos.maxRoi !== null && (pos.maxRoi - pos.roi) >= CONFIG.TRAIL_DROP_FROM_MAX_ROI;
+  const droppedFromMax =
+    pos.maxRoi !== null && Number(pos.maxRoi ?? 0) - Number(pos.roi ?? 0) >= CONFIG.TRAIL_DROP_FROM_MAX_ROI;
   const priceCrossUpMA10 = ma10 && price > ma10;
 
   if (enoughProfit && (droppedFromMax || priceCrossUpMA10)) {
-    // Lấy balance trước khi TP
     const { totalBalance: balanceBefore } = await getFuturesBalance();
-    const positionBefore = { ...pos }; // Lưu position trước khi đóng
-    
-    // Close toàn bộ position thực tế
-    const closeResult = await apiClosePosition(symbol, pos.quantity, 'SHORT');
-    
+    const positionBefore = { ...pos };
+
+    const closeResult = await apiClosePosition(symbol, pos.quantity, "SHORT");
+
     if (closeResult.success) {
-      // Chờ API cập nhật
-      await new Promise(r => setTimeout(r, 1000));
-      
-      // Lấy balance sau khi TP
+      await new Promise((r) => setTimeout(r, 1000));
+
       const { totalBalance: balanceAfter } = await getFuturesBalance();
       const realizedPnl = balanceAfter - balanceBefore;
-      
-      
-      // Xóa position khỏi memory
+
       positions.delete(symbol);
       await recomputeEquity();
-      
+
       console.log(`✅ Take profit successful for ${symbol}:`, {
-        realizedPnl: '$' + realizedPnl.toFixed(4),
-        roiAtClose: positionBefore.roi.toFixed(2) + '%',
-        maxRoi: positionBefore.maxRoi?.toFixed(2) + '%',
-        balanceChange: '$' + (balanceAfter - balanceBefore).toFixed(4)
+        realizedPnl: "$" + realizedPnl.toFixed(4),
+        roiAtClose: Number(positionBefore.roi ?? 0).toFixed(2) + "%",
+        maxRoi: positionBefore.maxRoi == null ? null : Number(positionBefore.maxRoi).toFixed(2) + "%",
+        balanceChange: "$" + (balanceAfter - balanceBefore).toFixed(4),
       });
 
       const reason = priceCrossUpMA10 ? "Giá chạm/cắt MA10 → Trend đảo" : "Trailing Stop theo ROI";
-      
+
       await notifyPositionEvent("✅ TAKE PROFIT", symbol, [
         `• ROI chốt: ${pct(positionBefore.roi)} (P/L $${usd(realizedPnl)})`,
-        `• Max ROI trước đó: ${pct(positionBefore.maxRoi)}`,
+        `• Max ROI trước đó: ${pct(positionBefore.maxRoi ?? 0)}`,
         `• ${reason}`,
         `• Entry: $${usd(positionBefore.entryPrice)} → Exit: $${usd(price)}`,
       ]);
@@ -464,11 +496,10 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
 }
 
 // =========================================================
-//               OPEN SHORT POSITION - API THẬT, SỬA CÔNG THỨC
+//               OPEN SHORT POSITION - API THẬT
 // =========================================================
 export async function openShortPosition(symbol, price, context) {
   try {
-    // Check balance trước khi mở lệnh
     await checkAndTransferBalance();
     const { totalBalance, available } = await getFuturesBalance();
     logDebug(`Balance for ${symbol}`, { totalBalance, available });
@@ -490,21 +521,22 @@ export async function openShortPosition(symbol, price, context) {
 
     const margin = totalBalance * CONFIG.ENTRY_PERCENT;
     if (margin <= 0) {
-      await notifyPositionEvent("❌ MARGIN=0", symbol, [`• Balance quá thấp: $${currentBalance}`]);
+      await notifyPositionEvent("❌ MARGIN=0", symbol, [
+        `• Balance quá thấp: $${usd(totalBalance)}`,
+      ]);
       return;
     }
 
     const notional = margin * CONFIG.LEVERAGE;
     logDebug(`Calculations for ${symbol}`, {
-      balance: currentBalance,
+      balance: totalBalance,
       entryPercent: CONFIG.ENTRY_PERCENT,
-      margin: margin,
+      margin,
       leverage: CONFIG.LEVERAGE,
-      notional: notional,
-      price: price
+      notional,
+      price,
     });
-  
-    // SỬA: Lấy contract info & tính contracts đúng
+
     const contractInfo = await getContractInfo(symbol);
     if (contractInfo.contractSize <= 0) {
       await notifyPositionEvent("❌ CONTRACT_SIZE=0", symbol, [
@@ -518,13 +550,13 @@ export async function openShortPosition(symbol, price, context) {
     const qty = roundContracts(rawContracts, contractInfo.volumePrecision, contractInfo.quantityUnit);
 
     logDebug(`Quantity calculation for ${symbol}`, {
-      margin: margin,
-      notional: notional,
-      price: price,
+      margin,
+      notional,
+      price,
       contractSize: contractInfo.contractSize,
-      rawContracts: rawContracts,
-      roundedQuantity: qty, // contracts
-      contractInfo: contractInfo
+      rawContracts,
+      roundedQuantity: qty,
+      contractInfo,
     });
 
     if (qty <= 0 || qty < contractInfo.minQuantity) {
@@ -536,23 +568,32 @@ export async function openShortPosition(symbol, price, context) {
       return;
     }
 
-    // THÊM: Verify actual margin sau rounding
     const actualCoins = qty * contractInfo.contractSize;
     const actualNotional = actualCoins * price;
     const actualMargin = actualNotional / CONFIG.LEVERAGE;
     const marginDiff = Math.abs(actualMargin - margin);
-    logDebug(`Margin verification for ${symbol}`, { actualMargin: actualMargin.toFixed(4), diff: marginDiff.toFixed(4) });
+    logDebug(`Margin verification for ${symbol}`, {
+      actualMargin: actualMargin.toFixed(4),
+      diff: marginDiff.toFixed(4),
+    });
 
-    if (marginDiff > margin * 0.1) { // >10% diff → warn
-      console.warn(`⚠️ Margin diff >10%: target=${margin.toFixed(4)}, actual=${actualMargin.toFixed(4)}`);
+    if (marginDiff > margin * 0.1) {
+      console.warn(
+        `⚠️ Margin diff >10%: target=${margin.toFixed(4)}, actual=${actualMargin.toFixed(4)}`
+      );
     }
 
     logTrade(`Opening position for ${symbol}`, {
-      symbol, price, qty, margin, notional, context, actualMargin
+      symbol,
+      price,
+      qty,
+      margin,
+      notional,
+      context,
+      actualMargin,
     });
 
-    // Mở lệnh thực tế (dùng openPosition với contractInfo)
-    const openResult = await apiOpenPosition(symbol, qty, 'SHORT', context, contractInfo);
+    const openResult = await apiOpenPosition(symbol, qty, "SHORT", context, contractInfo);
     logDebug(`Open position result for ${symbol}`, openResult);
 
     if (!openResult.success) {
@@ -565,23 +606,28 @@ export async function openShortPosition(symbol, price, context) {
       return;
     }
 
-    // Tạo position local
+    // Tạo position local (đủ state quản lý, tránh undefined)
     const pos = {
       symbol,
-      side: "short",
+      side: "SHORT",
       entryPrice: price,
-      quantity: qty, // contracts
-      coins: actualCoins, // mới
+      quantity: qty,
+      coins: actualCoins,
       notional: actualNotional,
-      margin: actualMargin, // dùng actual
+      margin: actualMargin,
+      marginUsed: actualMargin,
       leverage: CONFIG.LEVERAGE,
       roi: 0,
       pnl: 0,
+      realizedPnl: 0,
+      totalPnl: 0,
+      lastPrice: price,
+
       maxRoi: null,
       dcaIndex: 0,
       cutCount: 0,
       inHodlMode: false,
-      initialMargin: actualMargin
+      initialMargin: actualMargin,
     };
 
     positions.set(symbol, pos);
@@ -593,20 +639,21 @@ export async function openShortPosition(symbol, price, context) {
       entryPrice: price,
       quantity: qty,
       margin: actualMargin.toFixed(4),
-      notional: actualNotional.toFixed(4)
+      notional: actualNotional.toFixed(4),
     });
+
     await notifyPositionEvent("🚀 OPEN SHORT", symbol, [
       `• Entry: $${usd(price)}`,
       `• Margin: $${usd(actualMargin)} (target: $${usd(margin)})`,
       `• Notional: $${usd(actualNotional)}`,
       `• Qty: ${qty} contracts (${actualCoins.toFixed(2)} coins)`,
       `• Order ID: ${openResult.orderId}`,
-      `• Position ID: ${openResult.positionId || 'N/A'}`,
+      `• Position ID: ${openResult.positionId || "N/A"}`,
       `• Lý do: ${context}`,
     ]);
   } catch (error) {
     logError(`Unexpected error in openShortPosition for ${symbol}`, error);
-    
+
     await notifyPositionEvent("❌ LỖI HỆ THỐNG", symbol, [
       `• Lỗi không xác định khi mở lệnh`,
       `• Error: ${error.message}`,
@@ -614,67 +661,66 @@ export async function openShortPosition(symbol, price, context) {
     ]);
   }
 }
-// Thêm hàm calcLongRoi (sau calcShortRoi):
-function calcLongRoi(entry, price, margin) {
-  if (!margin || margin <= 0) return 0;
-  
-  const leverage = CONFIG.LEVERAGE;
-  const notional = margin * leverage;
-  const priceChangePct = (price - entry) / entry;
-  const pnl = priceChangePct * notional;
-  
-  // ROI = P/L / margin * 100%
-  const roi = (pnl / margin) * 100;
-  
-  console.log(`🔧 calcLongRoi: entry=${entry}, price=${price}, margin=${margin}, pnl=${pnl.toFixed(4)}, roi=${roi.toFixed(2)}%`);
-  
-  return roi;
-}
-// Sync tất cả positions từ API khi khởi động (cập nhật với data mới)
-// Trong hàm syncAllPositionsFromAPI
+
+// =========================================================
+//        SYNC ALL POSITIONS FROM API WHEN STARTING
+// =========================================================
 export async function syncAllPositionsFromAPI() {
   try {
-    console.log('🔄 Syncing positions từ API...');
-    
+    console.log("🔄 Syncing positions từ API...");
+
     const apiPositions = await getOpenPositions();
-    
     console.log(`📊 API returned ${apiPositions.length} positions`);
-    
-    // Clear positions cũ
-    positions.clear();
-    
-    // Sync từng position
+
+    const activeSymbols = new Set();
+
+    // 1) Update/Add positions còn mở
     for (const apiPosRaw of apiPositions) {
       const symbol = apiPosRaw.symbol;
-      const holdVol = parseFloat(apiPosRaw.holdVol || apiPosRaw.volume || 0);
-      
-      if (holdVol !== 0) {
-        console.log(`🔄 Syncing active position: ${symbol}, volume: ${holdVol}`);
-        
-        // Dùng getPosition để tính đầy đủ
-        const pos = await apiGetPosition(symbol);
-        if (pos) {
-          // ✅ SỬA: Tính ROI với đủ 3 tham số
-          if (pos.side === "SHORT") {
-            pos.roi = calcShortRoi(pos.entryPrice, pos.lastPrice, pos.marginUsed || pos.margin);
-          } else if (pos.side === "LONG") {
-            // Nếu cần tính ROI cho LONG
-            pos.roi = calcLongRoi(pos.entryPrice, pos.lastPrice, pos.marginUsed || pos.margin);
-          }
-          
-          if (pos.roi > 0) pos.maxRoi = pos.roi;
-          
-          positions.set(symbol, pos);
-          console.log(`✅ Đã sync position: ${symbol}, Qty: ${pos.quantity} contracts, PnL: $${pos.pnl.toFixed(4)}, ROI: ${pos.roi.toFixed(2)}%, Margin: $${pos.margin.toFixed(4)}`);
+      const holdVol = Number(apiPosRaw.holdVol ?? apiPosRaw.volume ?? 0);
+
+      if (!symbol || holdVol === 0) continue;
+
+      activeSymbols.add(symbol);
+
+      const safePos = await syncPositionFromAPI(symbol);
+      if (safePos) {
+        // Nếu API không trả roi chuẩn, có thể tự tính lại theo side (optional)
+        if (safePos.side === "SHORT") {
+          safePos.roi = calcShortRoi(safePos.entryPrice, safePos.lastPrice, safePos.marginUsed ?? safePos.margin);
+        } else if (safePos.side === "LONG") {
+          safePos.roi = calcLongRoi(safePos.entryPrice, safePos.lastPrice, safePos.marginUsed ?? safePos.margin);
         }
+
+        // cập nhật maxRoi sau khi tính roi
+        if (safePos.maxRoi === null || Number(safePos.roi ?? 0) > Number(safePos.maxRoi)) {
+          safePos.maxRoi = Number(safePos.roi ?? 0);
+        }
+
+        positions.set(symbol, safePos);
+
+        console.log(
+          `✅ Đã sync position: ${symbol}, Qty: ${safePos.quantity} contracts, PnL: $${Number(
+            safePos.pnl ?? 0
+          ).toFixed(4)}, ROI: ${Number(safePos.roi ?? 0).toFixed(2)}%, Margin: $${Number(
+            safePos.margin ?? 0
+          ).toFixed(4)}`
+        );
       }
     }
-    
+
+    // 2) Xóa positions không còn trên API (đã đóng)
+    for (const symbol of [...positions.keys()]) {
+      if (!activeSymbols.has(symbol)) {
+        console.log(`🗑️ Removing ${symbol} (no longer in API)`);
+        positions.delete(symbol);
+      }
+    }
+
     console.log(`✅ Đã sync ${positions.size} positions từ API`);
     await recomputeEquity();
-    
   } catch (error) {
-    console.error('❌ Lỗi sync positions:', error);
+    console.error("❌ Lỗi sync positions:", error);
   }
 }
 
@@ -682,7 +728,15 @@ export async function syncAllPositionsFromAPI() {
 export function logPositionsStatus() {
   console.log(`\n📊 POSITIONS STATUS (${positions.size} positions):`);
   for (const [symbol, pos] of positions.entries()) {
-    console.log(`   ${symbol}: ${pos.side} | Qty: ${pos.quantity} contracts | Entry: $${pos.entryPrice.toFixed(6)} | PnL: $${pos.pnl.toFixed(4)} | ROI: ${pct(pos.roi)} | Margin: $${pos.margin.toFixed(4)}`);
+    console.log(
+      `   ${symbol}: ${pos.side} | Qty: ${Number(pos.quantity ?? 0)} contracts | Entry: $${Number(
+        pos.entryPrice ?? 0
+      ).toFixed(6)} | PnL: $${Number(pos.pnl ?? 0).toFixed(4)} | ROI: ${pct(
+        pos.roi ?? 0
+      )} | Margin: $${Number(pos.margin ?? 0).toFixed(4)}`
+    );
   }
-  console.log(`   Wallet: $${usd(accountState.walletBalance)} | Equity: $${usd(accountState.equity)}\n`);
+  console.log(
+    `   Wallet: $${usd(accountState.walletBalance)} | Equity: $${usd(accountState.equity)}\n`
+  );
 }
