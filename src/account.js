@@ -223,7 +223,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
     inHodlMode: pos.inHodlMode,
     maxRoi: pos.maxRoi,
     initialMargin: pos.initialMargin,
-    lastRoi: pos.lastRoi,  giữ lastRoi
+    lastRoi: pos.lastRoi,  //giữ lastRoi
   };
 
   // Cập nhật data market từ API (KHÔNG overwrite state quản lý)
