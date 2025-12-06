@@ -304,14 +304,6 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
     //  Cross-down: từ trên ngưỡng -> xuống dưới/đúng ngưỡng
     const crossedDown = last > trigger && now <= trigger;
 
-    console.log(`DCA CROSS CHECK for ${symbol}:`, {
-      dcaIndex: pos.dcaIndex,
-      lastRoi: last.toFixed(2) + "%",
-      currentRoi: now.toFixed(2) + "%",
-      trigger: trigger + "%",
-      crossedDown,
-      condition: `(${last.toFixed(2)} > ${trigger}) && (${now.toFixed(2)} <= ${trigger})`,
-    });
 
     if (crossedDown) {
       if (!pos.initialMargin) pos.initialMargin = pos.margin ?? 0;
