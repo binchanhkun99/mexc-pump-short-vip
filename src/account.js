@@ -387,7 +387,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
             `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
           ]);
 
-           done
+           //done
           return;
         }
       } else {
