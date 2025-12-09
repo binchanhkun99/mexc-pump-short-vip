@@ -29,10 +29,10 @@ function formatUsd(v) {
 async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   if (!klines || klines.length < 15) return;
 
-   // CHECK PUMP COOLDOWN: Nếu coin vừa pump trong 1h qua -> bỏ qua
+   // CHECK PUMP COOLDOWN: Nếu coin vừa pump trong 10p qua -> bỏ qua
   if (pumpCooldown.has(symbol)) {
     const pumpTime = pumpCooldown.get(symbol);
-    const cooldownMs = 10 * 60 * 1000; // 1 giờ
+    const cooldownMs = 10 * 60 * 1000; // 10p
     if (Date.now() - pumpTime < cooldownMs) {
       return; // Bỏ qua coin này trong pump cooldown
     } else {
@@ -103,7 +103,7 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
         `Pump: +${pumpPct.toFixed(2)}%\n` +
         `Đỉnh tạm thời: $${formatUsd(highestPrice)}\n` +
         `Volume 24h: $${(volume24h / 1000000).toFixed(1)}M\n` +
-        `${mexcOnly ? 'CHỈ MEXC 🟢' : 'CÓ BINANCE 🟡'}\n` +
+        `${mexcOnly ? 'KHÔNG CÓ TRÊN BINANCE 🟢' : 'CÓ BINANCE 🟡'}\n` +
         `Spread hiện tại: ${spreadPct.toFixed(2)}%\n` +
         `Funding hiện tại: ${fundingPctStr}%\n`;
 
