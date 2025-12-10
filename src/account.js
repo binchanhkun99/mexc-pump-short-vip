@@ -72,7 +72,7 @@ export async function notifyPositionEvent(title, symbol, body) {
     `${title}: [${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n` +
     body.join("\n") +
     `\n\nBalance: $${usd(accountState.walletBalance)} | Equity: $${usd(accountState.equity)}` +
-    `\nLãi đã rút : $159 - Lỗ: 0` +
+    `\nLãi đã rút : $250 - Lỗ: 0` +
     `\nOpen positions: ${positions.size}`;
 
   await sendMessageWithAutoDelete(msg, {
