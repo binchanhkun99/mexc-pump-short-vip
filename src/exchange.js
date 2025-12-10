@@ -261,7 +261,7 @@ export async function getListingDays(symbol) {
   try {
     // Futures Day1
     const res = await fetchRetry(
-      `https://contract.mexc.com/api/v1/contract/kline/${symbol}`,
+      `https://contract.mexc.co/api/v1/contract/kline/${symbol}`,
       {
         interval: 'Day1',
         start: Math.floor((now - 86400000 * 200) / 1000),
@@ -282,7 +282,7 @@ export async function getListingDays(symbol) {
   // Fallback Spot
   try {
     const spotSymbol = symbol.replace('_USDT', 'USDT');
-    const res = await fetchRetry('https://api.mexc.com/api/v3/klines', {
+    const res = await fetchRetry('https://api.mexc.co/api/v3/klines', {
       symbol: spotSymbol,
       interval: '1d',
       limit: 500
@@ -299,7 +299,7 @@ export async function getListingDays(symbol) {
   }
 
   // Fallback cuối
-  listingDays = 365;
+  listingDays = 1;
   listingDaysCache.set(symbol, listingDays);
   return listingDays;
 }
