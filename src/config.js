@@ -26,7 +26,7 @@ export const CONFIG = {
   // ---- GIẢ LẬP TÀI KHOẢN & QUẢN LÝ LỆNH ----
   LEVERAGE: 20,
   ACCOUNT_BALANCE_START: 150,
-  ACCOUNT_BASE_CAPITAL: 250,             // Dùng để tính ngưỡng 25%
+  ACCOUNT_BASE_CAPITAL: 150,             // Dùng để tính ngưỡng 25%
 
 DCA_PLAN: [
     { roiTrigger: -100, addPercent: 0.005 }, // 1×

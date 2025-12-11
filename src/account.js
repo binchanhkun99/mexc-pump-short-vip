@@ -154,7 +154,6 @@ async function syncPositionFromAPI(symbol) {
 
       lastPrice: Number(apiPos.lastPrice ?? 0),
 
-      // ✅ Giữ trạng thái quản lý + default chắc chắn (không undefined)
       dcaIndex: existingPos?.dcaIndex ?? 0,
       cutCount: existingPos?.cutCount ?? 0,
       inHodlMode: existingPos?.inHodlMode ?? false,
@@ -196,7 +195,6 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   // Lấy position mới nhất từ API (safePos)
   const apiPos = await syncPositionFromAPI(symbol);
   if (!apiPos) {
-    console.log(`🗑️ Position ${symbol} đã đóng trên API, xóa khỏi memory`);
     positions.delete(symbol);
     await recomputeEquity();
     return;
@@ -213,8 +211,9 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
     quantity: apiPos.quantity,
   });
 
-  // Giữ ROI cũ để cross-down
+  // Giữ ROI cũ để cross-down và kiểm tra recovery
   const oldRoi = Number(pos.roi ?? 0);
+  const oldLastRoi = Number(pos.lastRoi ?? oldRoi);
 
   // Lưu lại các trạng thái quản lý trước khi cập nhật
   const savedState = {
@@ -223,7 +222,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
     inHodlMode: pos.inHodlMode,
     maxRoi: pos.maxRoi,
     initialMargin: pos.initialMargin,
-    lastRoi: pos.lastRoi,  //giữ lastRoi
+    lastRoi: pos.lastRoi,
   };
 
   // Cập nhật data market từ API (KHÔNG overwrite state quản lý)
@@ -291,31 +290,102 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   }
 
   // =========================================================
-  //              2) DCA (MULTIPLIER x2) - ✅ LOGIC CHUẨN
-  //              DCA khi ROI vừa cắt xuống trigger hiện tại
+  //              2) DCA (MULTIPLIER x2 margin hiện tại)
   // =========================================================
   if (!pos.inHodlMode && pos.dcaIndex < CONFIG.DCA_PLAN.length) {
     const plan = CONFIG.DCA_PLAN[pos.dcaIndex];
-
     const last = Number(pos.lastRoi ?? 0);
     const now = Number(pos.roi ?? 0);
     const trigger = Number(plan.roiTrigger);
 
-    //  Cross-down: từ trên ngưỡng -> xuống dưới/đúng ngưỡng
+    // Cross-down: từ trên ngưỡng -> xuống dưới/đúng ngưỡng
     const crossedDown = last > trigger && now <= trigger;
 
-
     if (crossedDown) {
-      if (!pos.initialMargin) pos.initialMargin = pos.margin ?? 0;
-
-      const addMargin = pos.initialMargin * 2 ** pos.dcaIndex;
+      // === LOGIC ĐẶC BIỆT: Nếu DCA lần thứ 3 và ROI hồi về -5% đến -10% ===
+      if (pos.dcaIndex === 2) { // index 2 = lần DCA thứ 3
+        const currentRoi = Number(pos.roi ?? 0);
+        
+        // Điều kiện ROI:
+        // ROI đang hồi (tăng) và nằm trong khoảng -5% đến -10%
+        const roiRecovering = oldLastRoi < currentRoi; // ROI đang tăng (ít âm hơn)
+        const roiInRange = currentRoi >= -10 && currentRoi <= -5;
+        
+        if (roiRecovering && roiInRange) {
+          console.log(`⚠️ [DCA3 RECOVERY] ${symbol}:`, {
+            ROI: currentRoi.toFixed(2) + "%",
+            lastROI: oldLastRoi.toFixed(2) + "%",
+            recovering: true,
+            inRange: true
+          });
+          
+          // Cắt 1/2 volume
+          const closeQty = await calculatePartialCloseSize(symbol, 0.5);
+          
+          if (closeQty > 0) {
+            const { totalBalance: balanceBefore } = await getFuturesBalance();
+            const closeResult = await apiClosePosition(symbol, closeQty, "SHORT");
+            
+            if (closeResult.success) {
+              await new Promise(r => setTimeout(r, 800));
+              
+              // Giữ initialMargin ban đầu
+              const savedInitialMargin = pos.initialMargin;
+              
+              // Reset DCA về 0
+              pos.dcaIndex = 0;
+              pos.lastRoi = currentRoi; // Update để tránh trigger DCA lại ngay
+              
+              // Cập nhật position từ API
+              const updatedApiPos = await syncPositionFromAPI(symbol);
+              if (updatedApiPos) {
+                const savedState2 = {
+                  dcaIndex: 0, // RESET
+                  cutCount: pos.cutCount,
+                  inHodlMode: pos.inHodlMode,
+                  maxRoi: pos.maxRoi,
+                  initialMargin: savedInitialMargin, // GIỮ NGUYÊN initialMargin
+                  lastRoi: currentRoi,
+                };
+                
+                Object.assign(pos, updatedApiPos);
+                Object.assign(pos, savedState2);
+                
+                const { totalBalance: balanceAfter } = await getFuturesBalance();
+                const realizedPnl = balanceAfter - balanceBefore;
+                
+                console.log(`✂️ [DCA3 HALF CUT] ${symbol}:`, {
+                  closedQty: closeQty,
+                  realizedPnl: "$" + realizedPnl.toFixed(4),
+                  newDCAIndex: 0,
+                  initialMargin: "$" + savedInitialMargin.toFixed(4),
+                  newMargin: "$" + Number(pos.margin ?? 0).toFixed(4),
+                });
+                
+                await notifyPositionEvent("✂️ DCA3 RECOVERY CUT", symbol, [
+                  `• Đã DCA 3 lần, ROI hồi phục về -5→-10%`,
+                  `• Cắt 50% volume, chốt: $${usd(realizedPnl)}`,
+                  `• Reset DCA index về 0`,
+                  `• ROI hiện tại: ${pct(currentRoi)} (trước: ${pct(oldLastRoi)})`,
+                  `• Điều kiện: ROI hồi về -5→-10%`,
+                ]);
+                
+                return; // Không thực hiện DCA tiếp
+              }
+            }
+          }
+        }
+      }
+      
+      // === DCA BÌNH THƯỜNG: margin hiện tại × 2 ===
+      const currentMargin = Number((pos.margin || pos.marginUsed || 0).toFixed(4));
+      const addMargin = currentMargin * 2; 
 
       // Check balance
       await checkAndTransferBalance();
       const { totalBalance } = await getFuturesBalance();
       if (totalBalance < addMargin) {
         console.log(`⚠️ Không đủ balance cho DCA ${symbol}: ${totalBalance} < ${addMargin}`);
-        // quan trọng: update lastRoi trước khi return
         pos.lastRoi = now;
         return;
       }
@@ -330,10 +400,11 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
       }
 
       console.log(`💰 Executing DCA Level ${pos.dcaIndex + 1} for ${symbol}:`, {
+        currentMargin: "$" + currentMargin.toFixed(4),
         addMargin: "$" + addMargin.toFixed(4),
         addQty,
         currentROI: now.toFixed(2) + "%",
-        marginMultiplier: `x${2 ** pos.dcaIndex}`,
+        multiplier: "x2",
       });
 
       const dcaResult = await apiOpenPosition(
@@ -356,38 +427,36 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
             cutCount: pos.cutCount,
             inHodlMode: pos.inHodlMode,
             maxRoi: Math.max(Number(pos.maxRoi ?? 0), Number(updatedApiPos.roi ?? 0)),
-            initialMargin: Number(pos.initialMargin ?? 0) + addMargin,
-
-            // reset lastRoi theo ROI mới sau DCA để tránh cross giả
+            initialMargin: Number(pos.initialMargin ?? 0), // Giữ initialMargin cũ
             lastRoi: Number(updatedApiPos.roi ?? now),
           };
 
           Object.assign(pos, updatedApiPos);
           Object.assign(pos, savedState2);
 
-          console.log(`✅ DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length} completed for ${symbol}:`, {
+          console.log(`✅ DCA Level ${newDcaIndex}/${CONFIG.DCA_PLAN.length} completed for ${symbol}:`, {
+            currentMargin: "$" + currentMargin.toFixed(4),
+            addMargin: "$" + addMargin.toFixed(4),
             newEntry: Number(pos.entryPrice ?? 0).toFixed(6),
             newROI: Number(pos.roi ?? 0).toFixed(2) + "%",
             newMargin: "$" + Number(pos.margin ?? 0).toFixed(4),
-            nextTrigger:
-              newDcaIndex < CONFIG.DCA_PLAN.length
-                ? CONFIG.DCA_PLAN[newDcaIndex].roiTrigger + "%"
-                : "MAX",
+            nextTrigger: newDcaIndex < CONFIG.DCA_PLAN.length
+              ? CONFIG.DCA_PLAN[newDcaIndex].roiTrigger + "%"
+              : "MAX",
           });
 
           await notifyPositionEvent("➕ DCA", symbol, [
-            `• DCA cấp số nhân: x${2 ** (pos.dcaIndex - 1)}`,
-            `• Entry cũ: $${usd(plan.oldEntry || pos.entryPrice)}`,
+            `• DCA nhân đôi margin hiện tại: x2`,
+            `• Margin hiện tại: $${usd(currentMargin)}`,
+            `• Margin thêm: $${usd(addMargin)}`,
             `• Giá DCA: $${usd(price)}`,
             `• Entry mới: $${usd(pos.entryPrice)}`,
             `• Total P/L: $${usd(pos.totalPnl || pos.pnl)} (${pct(pos.roi)})`,
             `• Unrealized: $${usd(pos.unrealizedPnl || pos.pnl)}`,
             `• Realized: $${usd(pos.realizedPnl || 0)}`,
-            `• Margin thêm: $${usd(addMargin)}`,
             `• DCA Level ${pos.dcaIndex}/${CONFIG.DCA_PLAN.length}`,
           ]);
 
-           //done
           return;
         }
       } else {
@@ -424,7 +493,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
             inHodlMode: pos.inHodlMode,
             maxRoi: pos.maxRoi,
             initialMargin: Number(pos.initialMargin ?? 0) * (1 - portion),
-            lastRoi: Number(pos.roi ?? 0), // giữ nhịp lastRoi
+            lastRoi: Number(pos.roi ?? 0),
           };
 
           Object.assign(pos, updatedApiPos);
@@ -460,8 +529,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   //           4) TAKE PROFIT - API THẬT
   // =========================================================
   const enoughProfit = pos.roi >= CONFIG.MIN_PROFIT_ROI_FOR_TRAIL;
-  const droppedFromMax =
-    pos.maxRoi !== null &&
+  const droppedFromMax = pos.maxRoi !== null &&
     Number(pos.maxRoi ?? 0) - Number(pos.roi ?? 0) >= CONFIG.TRAIL_DROP_FROM_MAX_ROI;
   const priceCrossUpMA10 = ma10 && price > ma10;
 
@@ -483,8 +551,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
       console.log(`✅ Take profit successful for ${symbol}:`, {
         realizedPnl: "$" + realizedPnl.toFixed(4),
         roiAtClose: Number(positionBefore.roi ?? 0).toFixed(2) + "%",
-        maxRoi:
-          positionBefore.maxRoi == null ? null : Number(positionBefore.maxRoi).toFixed(2) + "%",
+        maxRoi: positionBefore.maxRoi == null ? null : Number(positionBefore.maxRoi).toFixed(2) + "%",
         balanceChange: "$" + (balanceAfter - balanceBefore).toFixed(4),
       });
 
@@ -508,8 +575,6 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   // ✅ update lastRoi cuối hàm cho lần tick sau
   pos.lastRoi = Number(pos.roi ?? 0);
 }
-
-
 // =========================================================
 //               OPEN SHORT POSITION - API THẬT
 // =========================================================
