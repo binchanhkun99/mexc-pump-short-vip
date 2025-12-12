@@ -472,7 +472,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   // =========================================================
   //      3) PARTIAL CUT — API THẬT
   // =========================================================
-  const cutThreshold = accountState.baseCapital * CONFIG.EQUITY_CUT_RATIO;
+  const cutThreshold = Number(accountState.baseCapital) * Number(CONFIG.EQUITY_CUT_RATIO);
   if (accountState.equity < cutThreshold && pos.cutCount < CONFIG.MAX_PARTIAL_CUTS) {
     const portion = 0.5;
     const closeQty = await calculatePartialCloseSize(symbol, portion);
