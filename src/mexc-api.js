@@ -379,6 +379,9 @@ function generatePositionId() {
 
 // Close position (DCA/TP/SL) với contracts chính xác
 export async function closePosition(symbol, quantity, side = "SHORT") {
+  let balanceBefore = 0;
+  let balanceAfter = 0;
+  
   try {
     const contractInfo = await getContractInfo(symbol);
     const currentPrice = await getCurrentPrice(symbol);
@@ -390,7 +393,6 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
 
     // ✅ BƯỚC 1: LẤY POSITION VỚI FIELD NAME ĐÚNG
     const allPositions = await getOpenPositions(formattedSymbol);
-    
     
     const position = allPositions.find((p) => {
       const hasPosition = parseFloat(p.holdVol || p.volume || 0) !== 0;
@@ -434,6 +436,11 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
     console.log(
       `🎯 Closing ${side}: ${formattedSymbol}, Contracts: ${closeQty}, Price: ${roundedPrice}, PositionId: ${realPositionId}`
     );
+
+    // ✅ LẤY BALANCE TRƯỚC KHI CLOSE (QUAN TRỌNG!)
+    const balanceDataBefore = await getFuturesBalance();
+    balanceBefore = balanceDataBefore.totalBalance;
+    console.log(`💰 Balance before close: $${balanceBefore.toFixed(4)}`);
 
     // ✅ ORDER PARAMS VỚI POSITION ID ĐÚNG
     const orderParams = {
@@ -482,43 +489,60 @@ export async function closePosition(symbol, quantity, side = "SHORT") {
       `✅ [ORDER_CLOSED] ${formattedSymbol} | ${side} | Contracts: ${closeQty} | Order: ${orderId} | PositionId: ${realPositionId}`
     );
 
-    // Lấy PnL thực tế
+    // ✅ LẤY BALANCE SAU KHI CLOSE (QUAN TRỌNG!)
     await new Promise(r => setTimeout(r, 800));
-    const updatedPositions = await getOpenPositions(formattedSymbol);
-    const updatedPosition = updatedPositions.find((p) => p.symbol === formattedSymbol && p.positionId === realPositionId);
+    const balanceDataAfter = await getFuturesBalance();
+    balanceAfter = balanceDataAfter.totalBalance;
+    console.log(`💰 Balance after close: $${balanceAfter.toFixed(4)}`);
+
+    // ✅ TÍNH PNL ĐÚNG: delta balance (KHÔNG dùng realised!)
+    pnl = balanceAfter - balanceBefore;
+    console.log(`💰 PnL from close: $${pnl.toFixed(4)} (balance: ${balanceBefore.toFixed(4)} → ${balanceAfter.toFixed(4)})`);
+
+    // ✅ THÊM: Tính ROI của lần close này
+    const positionBeforeClose = await getPosition(symbol);
+    let closeROI = 0;
+    let allocatedMarginForPortion = 0;
     
-if (updatedPosition) {
-  // Partial close - vẫn còn position
-  // Lấy realized P/L từ field 'realised'
-  const newRealised = parseFloat(updatedPosition.realised || 0);
-  const oldRealised = parseFloat(position.realised || 0);
-  pnl = newRealised - oldRealised; // P/L từ lần close này
-} else {
-  // Full close - position đã đóng
-  // Lấy toàn bộ realized P/L
-  const closedPositions = await getOpenPositions(); // Lấy tất cả positions
-  const closedPos = closedPositions.find(p => p.positionId === realPositionId);
-  
-  if (closedPos) {
-    // Position vẫn tồn tại nhưng holdVol = 0
-    pnl = parseFloat(closedPos.realised || 0);
-  } else {
-    // Position đã biến mất, dùng giá trị từ position cũ
-    pnl = parseFloat(position.realised || 0);
-  }
-}
+    if (positionBeforeClose) {
+      // Tính phần margin tương ứng với quantity đang close
+      const portion = closeQty / position.holdVol;
+      allocatedMarginForPortion = positionBeforeClose.currentMargin * portion;
+      
+      if (allocatedMarginForPortion > 0) {
+        closeROI = (pnl / allocatedMarginForPortion) * 100;
+      }
+    }
 
     return {
       success: true,
       orderId,
-      pnl,
-      positionId: realPositionId
+      pnl, // PnL thực từ delta balance
+      balanceBefore,
+      balanceAfter,
+      positionId: realPositionId,
+      closeROI, // ROI của lần close này
+      allocatedMarginForPortion, // Vốn cho phần đã close
+      warning: "PnL tính từ delta balance, không dùng realised từ API"
     };
   } catch (err) {
     console.error(`❌ [CLOSE_ORDER_ERROR] ${symbol}:`, err.message);
     if (err.response) {
       console.error("❌ Response data:", JSON.stringify(err.response.data, null, 2));
     }
+    
+    // Vẫn trả về pnl từ balance nếu có
+    if (balanceBefore > 0 && balanceAfter > 0) {
+      const pnl = balanceAfter - balanceBefore;
+      return { 
+        success: false, 
+        pnl, 
+        error: err.message,
+        balanceBefore,
+        balanceAfter 
+      };
+    }
+    
     return { success: false, pnl: 0, error: err.message };
   }
 }
@@ -543,10 +567,7 @@ export async function getPosition(symbol) {
     const entryPrice = parseFloat(position.openAvgPrice || position.avgPrice || 0);
     const contracts = Math.abs(parseFloat(position.holdVol || position.volume || 0));
     
-    // ✅ IGNORE profitRatio FROM API - IT'S WRONG!
-    // const profitRatio = parseFloat(position.profitRatio || 0); // ❌ DON'T USE THIS
-    
-    // Tính P/L đúng từ first principles
+    // TÍNH UNREALIZED PNL 
     const contractSize = contractInfo.contractSize;
     const coins = contracts * contractSize;
     const entryValue = coins * entryPrice;
@@ -554,43 +575,25 @@ export async function getPosition(symbol) {
     
     let unrealizedPnl = 0;
     if (position.positionType === 2) { // SHORT
-      unrealizedPnl = entryValue - currentValue;
+      unrealizedPnl = entryValue - currentValue; // âm khi giá tăng
     } else { // LONG
-      unrealizedPnl = currentValue - entryValue;
+      unrealizedPnl = currentValue - entryValue; // âm khi giá giảm
     }
     
-
     const realizedPnl = parseFloat(position.realised || 0);
     const totalPnl = realizedPnl + unrealizedPnl;
     
+    //  CURRENT MARGIN (quan trọng cho ROI)
+    const currentMargin = parseFloat(position.im || position.oim || 0);
+    
+    //  POSITION SIZE HIỆN TẠI
     const positionSize = currentValue;
-    const marginUsed = parseFloat(position.im || position.oim || positionSize / LEVERAGE);
-
-    let roi = 0;
-    if (marginUsed > 0) {
-      roi = (totalPnl / marginUsed) * 100;
-    }
-
+    
+    //  KHÔNG TÍNH ROI Ở ĐÂY NỮA!
+    // ROI sẽ tính trong account.js với công thức: unrealizedPnl / currentMargin
+    
     // Debug log để confirm
-    // console.log(`💰 CORRECTED Position data for ${symbol}:`, {
-    //   positionId: position.positionId,
-    //   contracts: contracts,
-    //   contractSize: contractSize,
-    //   coins: coins,
-    //   entryPrice: entryPrice,
-    //   currentPrice: price,
-    //   priceChangePct: (((entryPrice - price) / entryPrice) * 100).toFixed(2) + '%',
-    //   entryValue: entryValue.toFixed(4),
-    //   currentValue: currentValue.toFixed(4),
-    //   unrealizedPnl: unrealizedPnl.toFixed(4),
-    //   realizedPnl: realizedPnl.toFixed(4),
-    //   totalPnl: totalPnl.toFixed(4),
-    //   marginUsed: marginUsed.toFixed(4),
-    //   calculatedROI: roi.toFixed(2) + '%',
-    //   // Hiển thị API profitRatio để thấy nó sai
-    //   apiProfitRatio: (position.profitRatio * 100)?.toFixed(2) + '% (WRONG!)',
-    //   warning: 'API profitRatio is incorrect - using calculated values'
-    // });
+  
 
     return {
       symbol,
@@ -599,25 +602,34 @@ export async function getPosition(symbol) {
       quantity: contracts,
       coins: coins,
       positionSize: positionSize,
-      marginUsed: marginUsed,
-      pnl: unrealizedPnl, // unrealized PnL cho tracking
+      
+      //  QUAN TRỌNG: Các field để tính ROI đúng
+      currentMargin: currentMargin,
+      unrealizedPnl: unrealizedPnl,
+      
+      //  Các field tracking
       realizedPnl: realizedPnl,
       totalPnl: totalPnl,
-      roi: roi, // ROI tính đúng từ P/L
       lastPrice: price,
-      margin: marginUsed,
-      notional: positionSize,
+      
+      //  Field cho position management
       positionId: position.positionId,
+      marginRatio: parseFloat(position.marginRatio || 0),
+      
+      //  Raw data để debug
       rawPositionData: {
         holdVol: position.holdVol,
         openAvgPrice: position.openAvgPrice,
+        im: position.im,
+        oim: position.oim,
         realised: position.realised,
-        fee: position.fee,
-        profitRatio: position.profitRatio // Lưu để debug
-      }
+        profitRatio: position.profitRatio // Lưu để debug (KHÔNG dùng)
+      },
+      
+      warning: "ROI field không tồn tại trong object này. Tính ROI với: unrealizedPnl/currentMargin"
     };
   } catch (err) {
-    console.error(`❌ [GET_POSITION_ERROR] ${symbol}:`, err.message);
+    console.error(` [GET_POSITION_ERROR] ${symbol}:`, err.message);
     return null;
   }
 }
