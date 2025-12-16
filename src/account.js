@@ -327,7 +327,7 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
       
       // === DCA BÌNH THƯỜNG: margin hiện tại × 2 ===
       const currentMargin = Number((pos.currentMargin || 0).toFixed(4));
-      const addMargin = currentMargin * 2; 
+      const addMargin = currentMargin; 
 
       // Check balance
       await checkAndTransferBalance();

@@ -42,6 +42,10 @@ DCA_PLAN: [
   PARTIAL_CUT_PERCENT: 0.1,              // Mỗi lần cắt 10% lệnh
   MAX_OPEN_POSITIONS: 3,                 // Tối đa 3 lệnh đang mở
 
+  MIN_ABOVE_BOTTOM_PCT: 70,           // PHẢI cao hơn đáy 7 ngày ít nhất 70%
+  BOTTOM_CHECK_DAYS: 7,               // Số ngày check đáy
+  BOTTOM_CACHE_MINUTES: 30,           // Cache 30 phút
+
   // ---- TAKE PROFIT THEO TREND ----
   MIN_PROFIT_ROI_FOR_TRAIL: 80,          // ROI >= 80% bắt đầu trailing
   TRAIL_DROP_FROM_MAX_ROI: 40,     

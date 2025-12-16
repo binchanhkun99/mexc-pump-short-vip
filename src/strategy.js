@@ -246,6 +246,33 @@ if (confidence < minConf) {
   });
   return;
 }
+    const bottomCheck = await checkBottomFilter(symbol, currentPrice);
+
+    if (!bottomCheck.safe) {
+      // Gửi cảnh báo chi tiết
+      const alertMsg = 
+        `🚫 **BOTTOM FILTER BLOCKED**\n` +
+        `[${symbol}](https://mexc.co/futures/${symbol}?type=swap)\n\n` +
+        `• ${bottomCheck.reason}\n` +
+        `• Current: $${formatUsd(currentPrice)}\n` +
+        `• 7-Day Bottom: $${formatUsd(bottomCheck.bottomPrice)}\n` +
+        `• Required: >${CONFIG.MIN_ABOVE_BOTTOM_PCT}% ($${formatUsd(bottomCheck.bottomPrice * (1 + CONFIG.MIN_ABOVE_BOTTOM_PCT/100))})\n` +
+        `• Position in 7-day range: ${bottomCheck.positionInRange}%\n\n` +
+        `⚠️ **KHÔNG SHORT** - Giá quá gần đáy 7 ngày, rủi ro cao!`;
+      
+      await sendMessageWithAutoDelete(alertMsg, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true
+      });
+      
+      // Xóa khỏi tracking và DỪNG xử lý
+      trackingCoins.delete(symbol);
+      console.log(`[BOTTOM_BLOCK] ${symbol}: Only +${bottomCheck.aboveBottomPct}% above bottom`);
+      return; 
+    }
+
+    console.log(`✅ [BOTTOM_PASS] ${symbol}: +${bottomCheck.aboveBottomPct}% above 7-day bottom`);
+
     // ======================================================================
     // STEP 4 — GỬI TÍN HIỆU SHORT (VẪN CHƯA CHECK FILTERS)
     // ======================================================================
