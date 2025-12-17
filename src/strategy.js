@@ -10,6 +10,7 @@ import {
   getListingDays
 } from './exchange.js';
 import { logTrade, logDebug } from './logger.js';
+import {checkBottomFilter} from './bottom-check.js'
 
 import { updatePositionWithPrice, openShortPosition } from './account.js';
 import { sendMessageWithAutoDelete, cleanupOldMessages } from './telegram.js';
