@@ -247,6 +247,9 @@ if (confidence < minConf) {
   });
   return;
 }
+
+    await new Promise(r => setTimeout(r, 600 + Math.random() * 2000));
+
     const bottomCheck = await checkBottomFilter(symbol, currentPrice);
 
     if (!bottomCheck.safe) {

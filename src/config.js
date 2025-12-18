@@ -42,7 +42,7 @@ DCA_PLAN: [
   PARTIAL_CUT_PERCENT: 0.1,              // Mỗi lần cắt 10% lệnh
   MAX_OPEN_POSITIONS: 3,                 // Tối đa 3 lệnh đang mở
 
-  MIN_ABOVE_BOTTOM_PCT: 70,           // PHẢI cao hơn đáy 7 ngày ít nhất 70%
+  MIN_ABOVE_BOTTOM_PCT: 50,           // PHẢI cao hơn đáy 7 ngày ít nhất 50%
   BOTTOM_CHECK_DAYS: 7,               // Số ngày check đáy
   BOTTOM_CACHE_MINUTES: 30,           // Cache 30 phút
 
