@@ -6,8 +6,8 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 
 dotenv.config();
 
-const API_KEY = process.env.MEXC_API_KEY?.trim();
-const API_SECRET = process.env.MEXC_SECRET_KEY?.trim();
+const API_KEY = "mx0vglZxoV3JnOlZiW";
+const API_SECRET = "8b1f01332b4b4019b877b76221522b34";
 
 if (!API_KEY || !API_SECRET) {
   console.error("❌ Thiếu MEXC_API_KEY hoặc MEXC_SECRET_KEY");
