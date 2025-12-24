@@ -1,4 +1,4 @@
-// t.js — ✅ SỬA CHỮ KÝ ĐÚNG CHUẨN FUTURES
+// t.js — ✅ ĐÃ SỬA: GET + query params + header signature
 import * as dotenv from "dotenv";
 import axios from "axios";
 import crypto from "crypto";
@@ -25,59 +25,59 @@ const axiosInstance = axios.create({
   timeout: 15000,
 });
 
-// ✅ Hàm ký CHUẨN FUTURES (theo MEXC docs)
-function signFutures(params, secret) {
-  // 1. Sắp xếp key theo thứ tự ASCII
+// ✅ Ký futures — giống trước, nhưng dùng cho query string
+function signFuturesQuery(params, secret) {
   const sortedKeys = Object.keys(params).sort();
-  // 2. Nối thành chuỗi: key1=value1&key2=value2...
   const queryString = sortedKeys
     .map(k => `${k}=${params[k]}`)
     .join("&");
-  // 3. HMAC-SHA256 với secret
   return crypto.createHmac("sha256", secret).update(queryString).digest("hex");
 }
 
-// ✅ Lấy balance — dùng POST + header ký
+// ✅ GET balance — đúng chuẩn MEXC Futures
 async function getFuturesBalance() {
   const timestamp = Date.now();
-
-  const payload = {
+  const params = {
     currency: "USDT",
-    timestamp,
+    timestamp: timestamp,
   };
 
-  const signature = signFutures(payload, API_SECRET);
+  // Tạo query string đã sắp xếp
+  const sortedKeys = Object.keys(params).sort();
+  const queryString = sortedKeys
+    .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`)
+    .join("&");
+
+  const signature = signFuturesQuery(params, API_SECRET);
+
+  const url = `https://contract.mexc.com/api/v1/private/account/assets?${queryString}`;
 
   try {
-    const res = await axiosInstance.post(
-      "https://contract.mexc.com/api/v1/private/account/assets",
-      payload, // body JSON
-      {
-        headers: {
-          "ApiKey": API_KEY,
-          "Request-Time": timestamp,
-          "Signature": signature,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const res = await axiosInstance.get(url, {
+      headers: {
+        "ApiKey": API_KEY,
+        "Request-Time": timestamp,
+        "Signature": signature,
+      },
+    });
 
     if (res.data.code !== 0) {
-      throw new Error(`MEXC error: ${res.data.message || res.data.msg}`);
+      throw new Error(`MEXC error ${res.data.code}: ${res.data.message || res.data.msg}`);
     }
 
     const usdt = res.data.data.find(a => a.currency === "USDT");
-    if (!usdt) throw new Error("USDT not found in response");
+    if (!usdt) throw new Error("USDT not found");
 
     return {
       available: parseFloat(usdt.available || 0),
       frozen: parseFloat(usdt.frozen || 0),
-      equity: parseFloat(usdt.equity || 0),
+      equity: parseFloat(usdt.profit_unreal || 0) + parseFloat(usdt.available || 0) + parseFloat(usdt.frozen || 0),
     };
   } catch (err) {
     console.error("❌ Lỗi balance:", err.message);
     if (err.response) {
-      console.log("📡 Raw response:", JSON.stringify(err.response.data, null, 2));
+      console.log("📡 Status:", err.response.status);
+      console.log("📡 Raw:", JSON.stringify(err.response.data, null, 2));
     }
     return null;
   }
@@ -85,10 +85,10 @@ async function getFuturesBalance() {
 
 // ▶️ Chạy
 (async () => {
-  console.log("🚀 Test balance — Futures API (POST + header signature)...");
+  console.log("🚀 Test MEXC Futures Balance — GET /private/account/assets");
   const bal = await getFuturesBalance();
   if (bal) {
-    console.log("✅ Thành công:", bal);
+    console.log("✅ Balance:", bal);
   } else {
     console.log("❌ Thất bại.");
   }
