@@ -60,7 +60,7 @@ async function fetchWithRetry(url, params, retries = 3) {
 }
 
 // ===== CORE: Lấy giá đáy 7 ngày =====
-export async function get7DayBottomPrice(symbol, useCache = true) {
+export async function get7DayBottomPrice(symbol, useCache = true, throwError = false) {
   const formattedSymbol = formatSymbol(symbol);
   const cacheKey = formattedSymbol;
   const now = Date.now();
@@ -117,6 +117,7 @@ export async function get7DayBottomPrice(symbol, useCache = true) {
     return null;
     
   } catch (err) {
+    if (throwError) throw err;
     console.error(`❌ [BOTTOM_PRICE_ERROR] ${symbol}:`, err.message);
     return null;
   }

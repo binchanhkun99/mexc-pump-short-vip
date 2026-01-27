@@ -41,6 +41,24 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
     }
   }
 
+  // -----------------------------------------------------------
+  // NEW: Check Max Positions - Stop Tracking if Full
+  // -----------------------------------------------------------
+  const { positions } = await import('./account.js');
+  if (positions.size >= CONFIG.MAX_OPEN_POSITIONS) {
+    if (trackingCoins.has(symbol)) {
+       // Optional: Vẫn track nếu đã có trong list? 
+       // User requirement: "ngừng tracking thêm".
+       // Nếu đang track dở thì cứ để chạy nốt, nhưng ko add mới?
+       // Logic here: analyzeForPumpAndReversal handles both "adding to track" and "processing tracked".
+       // If we want to prevent NEW tracking, we should check before "STEP 1".
+       // But analyzeForPumpAndReversal is called for ALL symbols.
+    } else {
+       // Nếu chưa track -> Bỏ qua luôn
+       return;
+    }
+  }
+
   const currentCandle = klines.at(-1);
   const currentPrice = currentCandle.close;
   const previousCandle = klines.at(-2);
@@ -49,7 +67,7 @@ async function analyzeForPumpAndReversal(symbol, klines, tickers) {
   const ma5 = calculateMA(klines, 5);
 
   // Cập nhật PnL / DCA / TP/SL nếu có lệnh mở
-  const { positions } = await import('./account.js');
+  // const { positions } = await import('./account.js'); // Moved up
   if (positions.has(symbol)) {
     await updatePositionWithPrice(symbol, currentPrice, ma10);
   }

@@ -16,6 +16,7 @@ import {
   calculatePartialCloseSize,
 } from "./mexc-api.js";
 import { logTrade, logError, logDebug } from "./logger.js";
+import { get7DayBottomPrice } from "./bottom-check.js";
 
 export const accountState = {
   availableBalance: 0,
@@ -544,6 +545,84 @@ export async function updatePositionWithPrice(symbol, price, ma10) {
   pos.lastROI = currentROI;
 }
 // =========================================================
+//        BACKGROUND TASK: CHECK BOTTOM SAFETY (RETRY)
+// =========================================================
+async function monitorBottomSafety(symbol) {
+  // Chỉ chạy loop nếu position vẫn còn mở
+  if (!positions.has(symbol)) return;
+
+  logDebug(`🛡️ Starting bottom check monitor for ${symbol}...`);
+
+  // Loop retry mãi mãi nếu gặp lỗii 510/429
+  // Nếu check ra kết quả:
+  // - Safe: Stop loop
+  // - Unsafe: Close position ngay lập tức
+  
+  const checkInterval = 15000; // 15s
+
+  const loop = async () => {
+    if (!positions.has(symbol)) return; // Position đã đóng -> dừng
+
+    try {
+      // Gọi get7DayBottomPrice với throwError = true để bắt lỗi 510
+      const bottomData = await get7DayBottomPrice(symbol, false, true); 
+
+      if (!bottomData) {
+         // Null data but valid call? -> retry next loop
+         setTimeout(loop, checkInterval);
+         return;
+      }
+
+      // Có data -> Check logic
+      const pos = positions.get(symbol);
+      const comparePrice = pos.lastPrice || pos.entryPrice; 
+      
+      const aboveBottomPct = ((comparePrice - bottomData.bottomPrice) / bottomData.bottomPrice) * 100;
+      const isSafe = aboveBottomPct >= CONFIG.MIN_ABOVE_BOTTOM_PCT;
+
+      if (isSafe) {
+        console.log(`✅ [BOTTOM_MONITOR_PASS] ${symbol}: +${aboveBottomPct.toFixed(2)}% above bottom. Keeping position.`);
+        return; // Dừng check loop
+      } else {
+        // FAIL -> Close immediately
+        console.warn(`🚨 [BOTTOM_MONITOR_FAIL] ${symbol}: Only +${aboveBottomPct.toFixed(2)}% above bottom (Required: ${CONFIG.MIN_ABOVE_BOTTOM_PCT}%). CLOSING POSITION!`);
+        
+        await notifyPositionEvent("🚨 BOTTOM SAFETY TRIGGER", symbol, [
+            `• Bottom Check sau khi vào lệnh phát hiện rủi ro.`,
+            `• Giá đáy 7 ngày: $${usd(bottomData.bottomPrice)}`,
+            `• Chênh lệch: +${aboveBottomPct.toFixed(2)}% (Mức an toàn: ${CONFIG.MIN_ABOVE_BOTTOM_PCT}%)`,
+            `• ĐÓNG LỆNH KHẨN CẤP!`
+        ]);
+
+        const closeResult = await apiClosePosition(symbol, pos.quantity, "SHORT");
+        if (closeResult.success) {
+            positions.delete(symbol);
+            await recomputeEquity();
+            console.log(`✅ [BOTTOM_MONITOR] Position ${symbol} closed successfully.`);
+        } else {
+            console.error(`❌ [BOTTOM_MONITOR] Failed to close ${symbol}: ${closeResult.error}`);
+        }
+        return; // Stop check loop
+      }
+
+    } catch (err) {
+      // Check lỗi 510, 429
+      const msg = err.message || "";
+      if (msg.includes("510") || msg.includes("429") || msg.includes("Too Many Requests")) {
+        console.log(`⏳ [BOTTOM_MONITOR_WAIT] ${symbol}: API busy (510/429), retrying in 15s...`);
+        setTimeout(loop, checkInterval);
+      } else {
+        // Lỗi khác (network, 500...) -> Log và vẫn retry? 
+        console.error(`⚠️ [BOTTOM_MONITOR_ERR] ${symbol}: ${msg}. Retrying...`);
+        setTimeout(loop, checkInterval);
+      }
+    }
+  };
+
+  loop();
+}
+
+// =========================================================
 //               OPEN SHORT POSITION - API THẬT
 // =========================================================
 export async function openShortPosition(symbol, price, context) {
@@ -706,6 +785,11 @@ export async function openShortPosition(symbol, price, context) {
       `• Position ID: ${openResult.positionId || "N/A"}`,
       `• Lý do: ${context}`,
     ]);
+    
+    // ----------------------------------------------------
+    // START BOTTOM CHECK MONITOR (Async)
+    // ----------------------------------------------------
+    monitorBottomSafety(symbol);
   } catch (error) {
     logError(`Unexpected error in openShortPosition for ${symbol}`, error);
 
